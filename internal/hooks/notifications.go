@@ -7,30 +7,42 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type NotifierQueue struct {
+type EventPublisherQueue struct {
 	UpdateChan <-chan model.WorkloadUpdate
-	notifiers  []Notifier
+	publishers []EventPublisher
 }
 
-func NewNotifierQueue(updateChan <-chan model.WorkloadUpdate, notifiers []Notifier) *NotifierQueue {
-	return &NotifierQueue{
+func NewEventPublisherQueue(updateChan <-chan model.WorkloadUpdate, publishers []EventPublisher) *EventPublisherQueue {
+	return &EventPublisherQueue{
 		UpdateChan: updateChan,
-		notifiers:  notifiers,
+		publishers: publishers,
 	}
 }
 
-func (nq *NotifierQueue) Loop() {
+func (eq *EventPublisherQueue) Loop() {
 	ctx := context.Background()
 	logger := log.FromContext(ctx)
 
-	for update := range nq.UpdateChan {
-		// Notify all registered notifiers
-		for _, notifier := range nq.notifiers {
-			if update.PreviousVersion != "" {
-				err := notifier.Notify(ctx, update)
-				if err != nil {
-					logger.Error(err, "failed to notify")
-				}
+	logger.Info("Event publisher queue started", "publishers", len(eq.publishers))
+
+	for update := range eq.UpdateChan {
+		logger.Info("Received workload update",
+			"namespace", update.Namespace,
+			"name", update.Name,
+			"kind", update.Kind,
+			"previousVersion", update.PreviousVersion,
+			"currentVersion", update.CurrentVersion,
+		)
+
+		// Publish to all registered publishers
+		for _, publisher := range eq.publishers {
+			// Publish all version updates, including initial deployments (where PreviousVersion is empty)
+			err := publisher.Publish(ctx, update)
+			if err != nil {
+				logger.Error(err, "failed to publish event",
+					"namespace", update.Namespace,
+					"name", update.Name,
+				)
 			}
 		}
 	}

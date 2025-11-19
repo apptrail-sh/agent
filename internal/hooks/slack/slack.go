@@ -13,17 +13,17 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-type SlackNotifier struct {
+type SlackPublisher struct {
 	WebhookURL string
 }
 
-func NewSlackNotifier(webhookURL string) *SlackNotifier {
-	return &SlackNotifier{
+func NewSlackPublisher(webhookURL string) *SlackPublisher {
+	return &SlackPublisher{
 		WebhookURL: webhookURL,
 	}
 }
 
-func (slack *SlackNotifier) Notify(ctx context.Context, workload model.WorkloadUpdate) error {
+func (slack *SlackPublisher) Publish(ctx context.Context, workload model.WorkloadUpdate) error {
 	log := ctrl.LoggerFrom(ctx)
 	httpClient := &http.Client{}
 

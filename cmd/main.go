@@ -22,6 +22,7 @@ import (
 	"os"
 
 	"github.com/apptrail-sh/controller/internal/hooks"
+	"github.com/apptrail-sh/controller/internal/hooks/controlplane"
 	"github.com/apptrail-sh/controller/internal/hooks/slack"
 	"github.com/apptrail-sh/controller/internal/model"
 
@@ -62,6 +63,10 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var slackWebhookURL string
+	var controlPlaneURL string
+	var clusterID string
+	var clusterName string
+	var environment string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -73,6 +78,10 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&slackWebhookURL, "slack-webhook-url", "", "The URL to send slack notifications to")
+	flag.StringVar(&controlPlaneURL, "controlplane-url", "", "The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/api/v1/events)")
+	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"), "Unique identifier for this cluster")
+	flag.StringVar(&clusterName, "cluster-name", os.Getenv("CLUSTER_NAME"), "Human-readable name for this cluster")
+	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"), "Environment name (e.g., production, staging, dev)")
 
 	opts := zap.Options{
 		Development: true,
@@ -149,21 +158,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	notifierChan := make(chan model.WorkloadUpdate, 100)
+	publisherChan := make(chan model.WorkloadUpdate, 100)
 
-	var notifiers = []hooks.Notifier{}
+	var publishers = []hooks.EventPublisher{}
+
+	// Register Slack publisher if configured
 	if slackWebhookURL != "" {
-		slackNotifier := slack.NewSlackNotifier(slackWebhookURL)
-		notifiers = append(notifiers, slackNotifier)
+		slackPublisher := slack.NewSlackPublisher(slackWebhookURL)
+		publishers = append(publishers, slackPublisher)
+		setupLog.Info("Slack publisher enabled", "webhook", slackWebhookURL)
 	}
-	notifierQueue := hooks.NewNotifierQueue(notifierChan, notifiers)
-	go notifierQueue.Loop()
+
+	// Register Control Plane publisher if configured
+	if controlPlaneURL != "" {
+		if clusterID == "" {
+			setupLog.Error(nil, "cluster-id is required when controlplane-url is set")
+			os.Exit(1)
+		}
+		if clusterName == "" {
+			clusterName = clusterID // Default to cluster ID if name not provided
+		}
+		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, clusterName, environment)
+		publishers = append(publishers, cpPublisher)
+		setupLog.Info("Control Plane publisher enabled",
+			"endpoint", controlPlaneURL,
+			"clusterID", clusterID,
+			"clusterName", clusterName,
+			"environment", environment)
+	}
+
+	if len(publishers) == 0 {
+		setupLog.Info("No event publishers configured, events will only be exported as metrics")
+	}
+
+	publisherQueue := hooks.NewEventPublisherQueue(publisherChan, publishers)
+	go publisherQueue.Loop()
 
 	deploymentReconciler := reconciler.NewDeploymentReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("apptrail-controller"),
-		notifierChan)
+		publisherChan)
 
 	if err = deploymentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDeployment")

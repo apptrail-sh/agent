@@ -44,17 +44,17 @@ type DeploymentReconciler struct {
 	Scheme             *runtime.Scheme
 	Recorder           record.EventRecorder
 	deploymentVersions map[string]AppVersion
-	notifierChan       chan<- model.WorkloadUpdate
+	publisherChan      chan<- model.WorkloadUpdate
 }
 
-func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, notifierChan chan<- model.WorkloadUpdate) *DeploymentReconciler {
+func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate) *DeploymentReconciler {
 	metrics.Registry.MustRegister(appVersionGauge)
 	return &DeploymentReconciler{
 		Client:             client,
 		Scheme:             scheme,
 		Recorder:           recorder,
 		deploymentVersions: make(map[string]AppVersion),
-		notifierChan:       notifierChan,
+		publisherChan:      publisherChan,
 	}
 }
 
@@ -104,7 +104,7 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			newAppVer.CurrentVersion,
 			timeFormatted).Set(1)
 
-		dr.notifierChan <- model.WorkloadUpdate{
+		dr.publisherChan <- model.WorkloadUpdate{
 			Name:            resource.Name,
 			Namespace:       resource.Namespace,
 			Kind:            resource.Kind,
