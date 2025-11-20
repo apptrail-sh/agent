@@ -110,6 +110,7 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			Kind:            resource.Kind,
 			PreviousVersion: newAppVer.PreviousVersion,
 			CurrentVersion:  newAppVer.CurrentVersion,
+			Labels:          resource.Labels,
 		}
 
 		log.Info("Deployment version updated", "Deployment", resource)

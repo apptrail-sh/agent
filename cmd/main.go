@@ -65,7 +65,6 @@ func main() {
 	var slackWebhookURL string
 	var controlPlaneURL string
 	var clusterID string
-	var clusterName string
 	var environment string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -79,9 +78,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&slackWebhookURL, "slack-webhook-url", "", "The URL to send slack notifications to")
 	flag.StringVar(&controlPlaneURL, "controlplane-url", "", "The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/api/v1/events)")
-	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"), "Unique identifier for this cluster")
-	flag.StringVar(&clusterName, "cluster-name", os.Getenv("CLUSTER_NAME"), "Human-readable name for this cluster")
-	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"), "Environment name (e.g., production, staging, dev)")
+	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"), "Unique identifier for this cluster (e.g., staging.stg01)")
+	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"), "Environment for events without namespace mapping (optional)")
 
 	opts := zap.Options{
 		Development: true,
@@ -175,15 +173,11 @@ func main() {
 			setupLog.Error(nil, "cluster-id is required when controlplane-url is set")
 			os.Exit(1)
 		}
-		if clusterName == "" {
-			clusterName = clusterID // Default to cluster ID if name not provided
-		}
-		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, clusterName, environment)
+		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, environment)
 		publishers = append(publishers, cpPublisher)
 		setupLog.Info("Control Plane publisher enabled",
 			"endpoint", controlPlaneURL,
 			"clusterID", clusterID,
-			"clusterName", clusterName,
 			"environment", environment)
 	}
 

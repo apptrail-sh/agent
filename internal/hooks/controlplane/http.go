@@ -16,12 +16,11 @@ type HTTPPublisher struct {
 	client      *resty.Client
 	endpoint    string
 	clusterID   string
-	clusterName string
 	environment string
 }
 
 // NewHTTPPublisher creates a new HTTP publisher for the control plane
-func NewHTTPPublisher(endpoint, clusterID, clusterName, environment string) *HTTPPublisher {
+func NewHTTPPublisher(endpoint, clusterID, environment string) *HTTPPublisher {
 	client := resty.New().
 		SetTimeout(10 * time.Second).
 		SetRetryCount(3).
@@ -32,7 +31,6 @@ func NewHTTPPublisher(endpoint, clusterID, clusterName, environment string) *HTT
 		client:      client,
 		endpoint:    endpoint,
 		clusterID:   clusterID,
-		clusterName: clusterName,
 		environment: environment,
 	}
 }
@@ -54,6 +52,24 @@ func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate
 	logger := log.FromContext(ctx)
 
 	// Build event - control plane will determine actual event type using semver
+	// Merge Kubernetes labels with cluster metadata
+	labels := make(map[string]string)
+
+	// Copy all Kubernetes labels from the workload
+	if update.Labels != nil {
+		for k, v := range update.Labels {
+			labels[k] = v
+		}
+	}
+
+	// Add cluster metadata (overrides if conflicts)
+	labels["cluster_name"] = p.clusterID
+
+	// Add environment only if provided (optional for namespace-mapped environments)
+	if p.environment != "" {
+		labels["environment"] = p.environment
+	}
+
 	event := Event{
 		ID:              uuid.New().String(),
 		ApplicationName: update.Name,
@@ -62,10 +78,7 @@ func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate
 		WorkloadType:    update.Kind,
 		PreviousVersion: update.PreviousVersion,
 		CurrentVersion:  update.CurrentVersion,
-		Labels: map[string]string{
-			"cluster_name": p.clusterName,
-			"environment":  p.environment,
-		},
+		Labels:          labels,
 	}
 
 	logger.Info("Publishing event to control plane",
