@@ -111,6 +111,8 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Continue with in-memory state
 		} else if !crdRolloutStarted.IsZero() {
 			stored.RolloutStarted = crdRolloutStarted
+			// Update in-memory map so determineDeploymentPhase can access it
+			dr.deploymentVersions[appkey] = stored
 			log.Info("Loaded rollout state from CRD", "rolloutStarted", crdRolloutStarted)
 		}
 	}
@@ -226,7 +228,11 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 // determineDeploymentPhase determines the deployment phase based on Kubernetes status
 func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployment, appkey string) string {
-	// Check deployment conditions first
+	// Check replica status to determine if rolling out
+	isRollingOut := deployment.Status.UpdatedReplicas < deployment.Status.Replicas ||
+		deployment.Status.ReadyReplicas < deployment.Status.Replicas
+
+	// Check for explicit failure conditions from Kubernetes
 	for _, condition := range deployment.Status.Conditions {
 		switch condition.Type {
 		case v1.DeploymentProgressing:
@@ -236,17 +242,10 @@ func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployme
 			if condition.Reason == "ProgressDeadlineExceeded" {
 				return phaseFailed
 			}
-		case v1.DeploymentAvailable:
-			if condition.Status == "False" {
-				return phaseRollingOut
-			}
 		}
 	}
 
-	// Check replica status
-	isRollingOut := deployment.Status.UpdatedReplicas < deployment.Status.Replicas ||
-		deployment.Status.ReadyReplicas < deployment.Status.Replicas
-
+	// If rolling out, check timeout BEFORE returning rolling_out status
 	if isRollingOut {
 		// Additional check: Has rollout been in progress too long?
 		// This catches cases where Flux/ArgoCD resets the K8s progress deadline
