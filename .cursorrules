@@ -1,0 +1,88 @@
+# AppTrail Controller - Cursor Rules
+
+## Quick Reference
+
+**What is this?** Kubernetes controller that watches Deployments for version changes (`app.kubernetes.io/version` label), exports Prometheus metrics, and sends notifications.
+
+**Tech**: Go 1.24.6 | Kubebuilder v4 | controller-runtime v0.22.3 | Domain: apptrail.sh
+
+**Detailed rules**: See `.cursor/rules/` for comprehensive patterns and examples.
+
+## Critical Patterns
+
+### Error Handling
+```go
+if err := dr.Get(ctx, req.NamespacedName, resource); err != nil {
+    return ctrl.Result{}, client.IgnoreNotFound(err)
+}
+```
+
+### Logging
+```go
+log := ctrl.LoggerFrom(ctx)
+log.Info("message", "key", value)
+```
+
+### Metrics (Critical!)
+Always delete old series before creating new:
+```go
+appVersionGauge.DeletePartialMatch(labels)  // Prevent cardinality explosion
+appVersionGauge.WithLabelValues(...).Set(1)
+```
+Register metrics **only once** in constructor, never in reconcile loop.
+
+### Adding Event Publishers
+1. Create `internal/hooks/yourservice/` with `EventPublisher` interface
+2. Register in `main.go` publishers slice
+3. Add config flag if needed
+
+## Project Structure
+```
+cmd/main.go                      # Manager setup, publisher registration
+internal/reconciler/deployment.go  # Reconciliation logic
+internal/hooks/                  # Event publishing system
+  - notifier.go                  # EventPublisher interface
+  - notifications.go             # EventPublisherQueue
+  - controlplane/                # Control Plane HTTP publisher
+  - slack/                       # Slack publisher
+```
+
+## Common Commands
+```bash
+make test && make lint  # Before committing
+make build             # Build binary
+make deploy IMG=...    # Deploy to cluster
+```
+
+## Control Plane Integration
+
+Send events to control plane via HTTP:
+```bash
+--controlplane-url=http://controlplane:3000/api/v1/events \
+--cluster-id=staging.stg01 \
+--environment=staging  # Optional if using environment mapping in control plane
+```
+
+Or via env vars: `CLUSTER_ID`, `ENVIRONMENT`
+
+**Sends all Deployment labels** including:
+- `app.kubernetes.io/version` (required for version tracking)
+- `team` (for team organization)
+- All other custom labels (Git metadata, etc.)
+- Plus cluster metadata: `cluster_name` (from cluster-id), `environment` (if set)
+
+## Deployment Phase Tracking
+
+Controller tracks phase changes and sends updates:
+- Version change triggers immediate event
+- Phase changes (rolling_out → success/failed) trigger events
+- **Custom 15-minute timeout** - Forces "failed" if rollout exceeds 15 min
+  (Handles Flux/ArgoCD resetting K8s progressDeadlineSeconds)
+
+## Key Gotchas
+- Version label `app.kubernetes.io/version` required on Deployments
+- Event publisher channel buffer: 100
+- Leader election ID: `ce02bd06.apptrail.sh`
+- HTTP/2 disabled by default (security)
+- Control plane HTTP publisher requires `--cluster-id` when enabled
+- Sends phase updates even when version unchanged

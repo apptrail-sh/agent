@@ -37,6 +37,7 @@ type AppVersion struct {
 	PreviousVersion string
 	CurrentVersion  string
 	LastUpdated     time.Time
+	RolloutStarted  time.Time // When rollout started
 }
 
 type DeploymentReconciler struct {
@@ -44,6 +45,7 @@ type DeploymentReconciler struct {
 	Scheme             *runtime.Scheme
 	Recorder           record.EventRecorder
 	deploymentVersions map[string]AppVersion
+	deploymentPhases   map[string]string // Track last sent phase
 	publisherChan      chan<- model.WorkloadUpdate
 }
 
@@ -54,6 +56,7 @@ func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recor
 		Scheme:             scheme,
 		Recorder:           recorder,
 		deploymentVersions: make(map[string]AppVersion),
+		deploymentPhases:   make(map[string]string),
 		publisherChan:      publisherChan,
 	}
 }
@@ -78,63 +81,84 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	if stored.CurrentVersion != versionLabel {
-		newAppVer := AppVersion{
-			PreviousVersion: stored.CurrentVersion,
-			CurrentVersion:  versionLabel,
-			LastUpdated:     time.Now(),
+	// Determine current deployment phase
+	currentPhase := dr.determineDeploymentPhase(resource, appkey)
+	lastPhase := dr.deploymentPhases[appkey]
+
+	// Send event if version changed OR phase changed
+	versionChanged := stored.CurrentVersion != versionLabel
+	phaseChanged := lastPhase != currentPhase
+
+	if versionChanged || phaseChanged {
+		// Update version tracking if version changed
+		if versionChanged {
+			newAppVer := AppVersion{
+				PreviousVersion: stored.CurrentVersion,
+				CurrentVersion:  versionLabel,
+				LastUpdated:     time.Now(),
+				RolloutStarted:  time.Now(), // Track when rollout started
+			}
+			dr.deploymentVersions[appkey] = newAppVer
+
+			timeFormatted := newAppVer.LastUpdated.Format(time.RFC3339)
+
+			labelsToDelete := make(map[string]string)
+			labelsToDelete["namespace"] = resource.Namespace
+			labelsToDelete["app"] = resource.Name
+
+			deleted := appVersionGauge.DeletePartialMatch(labelsToDelete)
+			if deleted > 0 {
+				log.Info("Deleted old deployment version metric", "Deployment", resource)
+			}
+
+			appVersionGauge.WithLabelValues(
+				resource.Namespace,
+				resource.Name,
+				stored.CurrentVersion,
+				versionLabel,
+				timeFormatted).Set(1)
 		}
-		dr.deploymentVersions[appkey] = newAppVer
 
-		timeFormatted := newAppVer.LastUpdated.Format(time.RFC3339)
+		// Update phase tracking
+		dr.deploymentPhases[appkey] = currentPhase
 
-		labelsToDelete := make(map[string]string)
-		labelsToDelete["namespace"] = resource.Namespace
-		labelsToDelete["app"] = resource.Name
-
-		deleted := appVersionGauge.DeletePartialMatch(labelsToDelete)
-		if deleted > 0 {
-			log.Info("Deleted old deployment version metric", "Deployment", resource)
-		}
-
-		appVersionGauge.WithLabelValues(
-			resource.Namespace,
-			resource.Name,
-			newAppVer.PreviousVersion,
-			newAppVer.CurrentVersion,
-			timeFormatted).Set(1)
-
-		// Determine deployment phase from Kubernetes status
-		phase := dr.determineDeploymentPhase(resource)
-
+		// Send event with current state
 		dr.publisherChan <- model.WorkloadUpdate{
 			Name:            resource.Name,
 			Namespace:       resource.Namespace,
 			Kind:            resource.Kind,
-			PreviousVersion: newAppVer.PreviousVersion,
-			CurrentVersion:  newAppVer.CurrentVersion,
+			PreviousVersion: stored.CurrentVersion,
+			CurrentVersion:  versionLabel,
 			Labels:          resource.Labels,
 
 			// Deployment status
-			DeploymentPhase:   phase,
+			DeploymentPhase:   currentPhase,
 			ReplicasTotal:     resource.Status.Replicas,
 			ReplicasReady:     resource.Status.ReadyReplicas,
 			ReplicasUpdated:   resource.Status.UpdatedReplicas,
 			ReplicasAvailable: resource.Status.AvailableReplicas,
 		}
 
-		log.Info("Deployment version updated",
-			"Deployment", resource,
-			"phase", phase,
-			"replicas", fmt.Sprintf("%d/%d ready", resource.Status.ReadyReplicas, resource.Status.Replicas))
+		if versionChanged {
+			log.Info("Deployment version updated",
+				"Deployment", resource,
+				"phase", currentPhase,
+				"replicas", fmt.Sprintf("%d/%d ready", resource.Status.ReadyReplicas, resource.Status.Replicas))
+		} else {
+			log.Info("Deployment phase updated",
+				"Deployment", resource,
+				"previousPhase", lastPhase,
+				"currentPhase", currentPhase,
+				"replicas", fmt.Sprintf("%d/%d ready", resource.Status.ReadyReplicas, resource.Status.Replicas))
+		}
 	}
 
 	return ctrl.Result{}, nil
 }
 
 // determineDeploymentPhase determines the deployment phase based on Kubernetes status
-func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployment) string {
-	// Check deployment conditions
+func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployment, appkey string) string {
+	// Check deployment conditions first
 	for _, condition := range deployment.Status.Conditions {
 		switch condition.Type {
 		case v1.DeploymentProgressing:
@@ -152,11 +176,20 @@ func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployme
 	}
 
 	// Check replica status
-	if deployment.Status.UpdatedReplicas < deployment.Status.Replicas {
-		return "rolling_out"
-	}
+	isRollingOut := deployment.Status.UpdatedReplicas < deployment.Status.Replicas ||
+		deployment.Status.ReadyReplicas < deployment.Status.Replicas
 
-	if deployment.Status.ReadyReplicas < deployment.Status.Replicas {
+	if isRollingOut {
+		// Additional check: Has rollout been in progress too long?
+		// This catches cases where Flux/ArgoCD resets the K8s progress deadline
+		stored := dr.deploymentVersions[appkey]
+		if !stored.RolloutStarted.IsZero() {
+			elapsed := time.Since(stored.RolloutStarted)
+			// Force failed after 15 minutes (longer than K8s default to account for resets)
+			if elapsed > 15*time.Minute {
+				return "failed"
+			}
+		}
 		return "rolling_out"
 	}
 
