@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"time"
 
+	apptrailv1alpha1 "github.com/apptrail-sh/controller/api/v1alpha1"
 	"github.com/apptrail-sh/controller/internal/model"
 
 	"github.com/prometheus/client_golang/prometheus"
 	v1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +22,12 @@ import (
 
 const (
 	appVersionMetricName = "apptrail_app_version"
+
+	// Deployment phases
+	phaseRollingOut  = "rolling_out"
+	phaseFailed      = "failed"
+	phaseSuccess     = "success"
+	phaseProgressing = "progressing"
 )
 
 var (
@@ -42,24 +52,30 @@ type AppVersion struct {
 
 type DeploymentReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	Recorder           record.EventRecorder
-	deploymentVersions map[string]AppVersion
-	deploymentPhases   map[string]string // Track last sent phase
-	publisherChan      chan<- model.WorkloadUpdate
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	deploymentVersions  map[string]AppVersion
+	deploymentPhases    map[string]string // Track last sent phase
+	publisherChan       chan<- model.WorkloadUpdate
+	controllerNamespace string // Namespace where controller is running
 }
 
-func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate) *DeploymentReconciler {
+func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) *DeploymentReconciler {
 	metrics.Registry.MustRegister(appVersionGauge)
 	return &DeploymentReconciler{
-		Client:             client,
-		Scheme:             scheme,
-		Recorder:           recorder,
-		deploymentVersions: make(map[string]AppVersion),
-		deploymentPhases:   make(map[string]string),
-		publisherChan:      publisherChan,
+		Client:              client,
+		Scheme:              scheme,
+		Recorder:            recorder,
+		deploymentVersions:  make(map[string]AppVersion),
+		deploymentPhases:    make(map[string]string),
+		publisherChan:       publisherChan,
+		controllerNamespace: controllerNamespace,
 	}
 }
+
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get
+// +kubebuilder:rbac:groups=apptrail.apptrail.sh,resources=deploymentrolloutstates,verbs=get;list;watch;create;update;patch;delete
 
 func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -67,7 +83,13 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	resource := &v1.Deployment{}
 	if err := dr.Get(ctx, req.NamespacedName, resource); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			// Deployment was deleted, clean up state
+			log.Info("Deployment deleted, cleaning up state", "namespace", req.Namespace, "name", req.Name)
+			_ = dr.deleteRolloutStateFromCRD(ctx, req.Namespace, req.Name)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 	log.Info("Deployment found", "Deployment", resource)
 
@@ -81,6 +103,18 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	// Load persistent state from CRD if in-memory state is empty
+	if stored.RolloutStarted.IsZero() {
+		crdRolloutStarted, err := dr.loadRolloutStateFromCRD(ctx, req.Namespace, req.Name)
+		if err != nil {
+			log.Error(err, "Failed to load rollout state from CRD")
+			// Continue with in-memory state
+		} else if !crdRolloutStarted.IsZero() {
+			stored.RolloutStarted = crdRolloutStarted
+			log.Info("Loaded rollout state from CRD", "rolloutStarted", crdRolloutStarted)
+		}
+	}
+
 	// Determine current deployment phase
 	currentPhase := dr.determineDeploymentPhase(resource, appkey)
 	lastPhase := dr.deploymentPhases[appkey]
@@ -89,6 +123,22 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	versionChanged := stored.CurrentVersion != versionLabel
 	phaseChanged := lastPhase != currentPhase
 
+	// Track rollout timing
+	// Set RolloutStarted when entering rolling_out phase (or on version change)
+	// Clear it when leaving rolling_out phase
+	needsPersistence := false
+	if currentPhase == phaseRollingOut && stored.RolloutStarted.IsZero() {
+		// Entering rolling_out phase for the first time
+		stored.RolloutStarted = time.Now()
+		needsPersistence = true
+		log.Info("Rollout started", "deployment", appkey, "time", stored.RolloutStarted)
+	} else if currentPhase != phaseRollingOut && !stored.RolloutStarted.IsZero() {
+		// Left rolling_out phase, clear the timer and delete CRD
+		stored.RolloutStarted = time.Time{}
+		log.Info("Rollout completed, cleaning up state", "deployment", appkey)
+		_ = dr.deleteRolloutStateFromCRD(ctx, req.Namespace, req.Name)
+	}
+
 	if versionChanged || phaseChanged {
 		// Update version tracking if version changed
 		if versionChanged {
@@ -96,9 +146,10 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				PreviousVersion: stored.CurrentVersion,
 				CurrentVersion:  versionLabel,
 				LastUpdated:     time.Now(),
-				RolloutStarted:  time.Now(), // Track when rollout started
+				RolloutStarted:  stored.RolloutStarted, // Preserve rollout timer
 			}
 			dr.deploymentVersions[appkey] = newAppVer
+			stored = newAppVer // Update local reference
 
 			timeFormatted := newAppVer.LastUpdated.Format(time.RFC3339)
 
@@ -117,10 +168,22 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				stored.CurrentVersion,
 				versionLabel,
 				timeFormatted).Set(1)
+		} else {
+			// Version didn't change but we might have updated RolloutStarted
+			dr.deploymentVersions[appkey] = stored
 		}
 
 		// Update phase tracking
 		dr.deploymentPhases[appkey] = currentPhase
+
+		// Persist rollout state to CRD if needed
+		if needsPersistence && !stored.RolloutStarted.IsZero() {
+			err := dr.saveRolloutStateToCRD(ctx, req.Namespace, req.Name, versionLabel, stored.RolloutStarted)
+			if err != nil {
+				log.Error(err, "Failed to persist rollout state to CRD")
+				// Don't fail the reconciliation, continue with in-memory state
+			}
+		}
 
 		// Send event with current state
 		dr.publisherChan <- model.WorkloadUpdate{
@@ -153,6 +216,11 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// If deployment is rolling out, requeue to check timeout periodically
+	if currentPhase == phaseRollingOut {
+		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -163,14 +231,14 @@ func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployme
 		switch condition.Type {
 		case v1.DeploymentProgressing:
 			if condition.Status == "False" {
-				return "failed"
+				return phaseFailed
 			}
 			if condition.Reason == "ProgressDeadlineExceeded" {
-				return "failed"
+				return phaseFailed
 			}
 		case v1.DeploymentAvailable:
 			if condition.Status == "False" {
-				return "rolling_out"
+				return phaseRollingOut
 			}
 		}
 	}
@@ -187,19 +255,110 @@ func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployme
 			elapsed := time.Since(stored.RolloutStarted)
 			// Force failed after 15 minutes (longer than K8s default to account for resets)
 			if elapsed > 15*time.Minute {
-				return "failed"
+				return phaseFailed
 			}
 		}
-		return "rolling_out"
+		return phaseRollingOut
 	}
 
 	// All replicas ready and updated
 	if deployment.Status.ReadyReplicas == deployment.Status.Replicas &&
 		deployment.Status.UpdatedReplicas == deployment.Status.Replicas {
-		return "success"
+		return phaseSuccess
 	}
 
-	return "progressing"
+	return phaseProgressing
+}
+
+// loadRolloutStateFromCRD loads the rollout state from the CRD if it exists
+func (dr *DeploymentReconciler) loadRolloutStateFromCRD(ctx context.Context, namespace, name string) (time.Time, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	stateName := fmt.Sprintf("%s-%s", namespace, name)
+	state := &apptrailv1alpha1.DeploymentRolloutState{}
+
+	err := dr.Get(ctx, types.NamespacedName{
+		Name:      stateName,
+		Namespace: dr.controllerNamespace,
+	}, state)
+
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return time.Time{}, nil // No state stored yet
+		}
+		log.Error(err, "Failed to load rollout state", "stateName", stateName)
+		return time.Time{}, err
+	}
+
+	return state.Spec.RolloutStarted.Time, nil
+}
+
+// saveRolloutStateToCRD saves the rollout state to a CRD
+func (dr *DeploymentReconciler) saveRolloutStateToCRD(ctx context.Context, namespace, name, version string, rolloutStarted time.Time) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	stateName := fmt.Sprintf("%s-%s", namespace, name)
+	state := &apptrailv1alpha1.DeploymentRolloutState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      stateName,
+			Namespace: dr.controllerNamespace,
+		},
+		Spec: apptrailv1alpha1.DeploymentRolloutStateSpec{
+			DeploymentNamespace: namespace,
+			DeploymentName:      name,
+			Version:             version,
+			RolloutStarted:      metav1.Time{Time: rolloutStarted},
+		},
+	}
+
+	// Try to create, if it exists, update it
+	err := dr.Create(ctx, state)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			// Update existing state
+			existingState := &apptrailv1alpha1.DeploymentRolloutState{}
+			err = dr.Get(ctx, types.NamespacedName{
+				Name:      stateName,
+				Namespace: dr.controllerNamespace,
+			}, existingState)
+			if err != nil {
+				return err
+			}
+
+			existingState.Spec = state.Spec
+			err = dr.Update(ctx, existingState)
+			if err != nil {
+				log.Error(err, "Failed to update rollout state", "stateName", stateName)
+				return err
+			}
+		} else {
+			log.Error(err, "Failed to create rollout state", "stateName", stateName)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deleteRolloutStateFromCRD deletes the rollout state CRD
+func (dr *DeploymentReconciler) deleteRolloutStateFromCRD(ctx context.Context, namespace, name string) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	stateName := fmt.Sprintf("%s-%s", namespace, name)
+	state := &apptrailv1alpha1.DeploymentRolloutState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      stateName,
+			Namespace: dr.controllerNamespace,
+		},
+	}
+
+	err := dr.Delete(ctx, state)
+	if err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "Failed to delete rollout state", "stateName", stateName)
+		return err
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

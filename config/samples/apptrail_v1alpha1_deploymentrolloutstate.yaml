@@ -1,0 +1,9 @@
+apiVersion: apptrail.apptrail.sh/v1alpha1
+kind: DeploymentRolloutState
+metadata:
+  labels:
+    app.kubernetes.io/name: controller
+    app.kubernetes.io/managed-by: kustomize
+  name: deploymentrolloutstate-sample
+spec:
+  # TODO(user): Add fields here

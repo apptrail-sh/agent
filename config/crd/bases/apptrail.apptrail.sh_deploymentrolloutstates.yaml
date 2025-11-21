@@ -1,0 +1,68 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  name: deploymentrolloutstates.apptrail.apptrail.sh
+spec:
+  group: apptrail.apptrail.sh
+  names:
+    kind: DeploymentRolloutState
+    listKind: DeploymentRolloutStateList
+    plural: deploymentrolloutstates
+    singular: deploymentrolloutstate
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DeploymentRolloutState is the Schema for the deploymentrolloutstates API
+          This resource tracks rollout timing state for deployments across the cluster
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of DeploymentRolloutState
+            properties:
+              deploymentName:
+                description: DeploymentName is the name of the deployment being tracked
+                type: string
+              deploymentNamespace:
+                description: DeploymentNamespace is the namespace of the deployment
+                  being tracked
+                type: string
+              rolloutStarted:
+                description: RolloutStarted is the timestamp when the rollout started
+                format: date-time
+                type: string
+              version:
+                description: Version is the version being rolled out (app.kubernetes.io/version
+                  label)
+                type: string
+            required:
+            - deploymentName
+            - deploymentNamespace
+            - rolloutStarted
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true

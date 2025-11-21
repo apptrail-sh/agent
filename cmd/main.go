@@ -41,6 +41,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	apptrailv1alpha1 "github.com/apptrail-sh/controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -52,6 +54,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(apptrailv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -77,9 +80,12 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&slackWebhookURL, "slack-webhook-url", "", "The URL to send slack notifications to")
-	flag.StringVar(&controlPlaneURL, "controlplane-url", "", "The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/api/v1/events)")
-	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"), "Unique identifier for this cluster (e.g., staging.stg01)")
-	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"), "Environment for events without namespace mapping (optional)")
+	flag.StringVar(&controlPlaneURL, "controlplane-url", "",
+		"The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/api/v1/events)")
+	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"),
+		"Unique identifier for this cluster (e.g., staging.stg01)")
+	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"),
+		"Environment for events without namespace mapping (optional)")
 
 	opts := zap.Options{
 		Development: true,
@@ -188,11 +194,20 @@ func main() {
 	publisherQueue := hooks.NewEventPublisherQueue(publisherChan, publishers)
 	go publisherQueue.Loop()
 
+	// Get the namespace where the controller is running
+	// This is used to store DeploymentRolloutState CRDs
+	controllerNamespace := os.Getenv("POD_NAMESPACE")
+	if controllerNamespace == "" {
+		controllerNamespace = "apptrail-system" // Default namespace
+		setupLog.Info("POD_NAMESPACE not set, using default", "namespace", controllerNamespace)
+	}
+
 	deploymentReconciler := reconciler.NewDeploymentReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("apptrail-controller"),
-		publisherChan)
+		publisherChan,
+		controllerNamespace)
 
 	if err = deploymentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDeployment")

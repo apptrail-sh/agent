@@ -7,4 +7,13 @@ layout:
 - go.kubebuilder.io/v4
 projectName: controller
 repo: github.com/apptrail-sh/controller
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: apptrail.sh
+  group: apptrail
+  kind: DeploymentRolloutState
+  path: github.com/apptrail-sh/controller/api/v1alpha1
+  version: v1alpha1
 version: "3"
