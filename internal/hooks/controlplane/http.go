@@ -45,6 +45,15 @@ type Event struct {
 	WorkloadType    string            `json:"workloadType"`
 	PreviousVersion string            `json:"previousVersion"`
 	CurrentVersion  string            `json:"currentVersion"`
+
+	// Deployment phase tracking
+	DeploymentPhase   string `json:"deploymentPhase,omitempty"`
+	ReplicasTotal     int32  `json:"replicasTotal,omitempty"`
+	ReplicasReady     int32  `json:"replicasReady,omitempty"`
+	ReplicasUpdated   int32  `json:"replicasUpdated,omitempty"`
+	ReplicasAvailable int32  `json:"replicasAvailable,omitempty"`
+	StatusMessage     string `json:"statusMessage,omitempty"`
+	StatusReason      string `json:"statusReason,omitempty"`
 }
 
 // Publish sends a workload update to the control plane
@@ -79,6 +88,15 @@ func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate
 		PreviousVersion: update.PreviousVersion,
 		CurrentVersion:  update.CurrentVersion,
 		Labels:          labels,
+
+		// Deployment phase tracking
+		DeploymentPhase:   update.DeploymentPhase,
+		ReplicasTotal:     update.ReplicasTotal,
+		ReplicasReady:     update.ReplicasReady,
+		ReplicasUpdated:   update.ReplicasUpdated,
+		ReplicasAvailable: update.ReplicasAvailable,
+		StatusMessage:     update.StatusMessage,
+		StatusReason:      update.StatusReason,
 	}
 
 	logger.Info("Publishing event to control plane",

@@ -104,6 +104,9 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			newAppVer.CurrentVersion,
 			timeFormatted).Set(1)
 
+		// Determine deployment phase from Kubernetes status
+		phase := dr.determineDeploymentPhase(resource)
+
 		dr.publisherChan <- model.WorkloadUpdate{
 			Name:            resource.Name,
 			Namespace:       resource.Namespace,
@@ -111,12 +114,59 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			PreviousVersion: newAppVer.PreviousVersion,
 			CurrentVersion:  newAppVer.CurrentVersion,
 			Labels:          resource.Labels,
+
+			// Deployment status
+			DeploymentPhase:   phase,
+			ReplicasTotal:     resource.Status.Replicas,
+			ReplicasReady:     resource.Status.ReadyReplicas,
+			ReplicasUpdated:   resource.Status.UpdatedReplicas,
+			ReplicasAvailable: resource.Status.AvailableReplicas,
 		}
 
-		log.Info("Deployment version updated", "Deployment", resource)
+		log.Info("Deployment version updated",
+			"Deployment", resource,
+			"phase", phase,
+			"replicas", fmt.Sprintf("%d/%d ready", resource.Status.ReadyReplicas, resource.Status.Replicas))
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// determineDeploymentPhase determines the deployment phase based on Kubernetes status
+func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployment) string {
+	// Check deployment conditions
+	for _, condition := range deployment.Status.Conditions {
+		switch condition.Type {
+		case v1.DeploymentProgressing:
+			if condition.Status == "False" {
+				return "failed"
+			}
+			if condition.Reason == "ProgressDeadlineExceeded" {
+				return "failed"
+			}
+		case v1.DeploymentAvailable:
+			if condition.Status == "False" {
+				return "rolling_out"
+			}
+		}
+	}
+
+	// Check replica status
+	if deployment.Status.UpdatedReplicas < deployment.Status.Replicas {
+		return "rolling_out"
+	}
+
+	if deployment.Status.ReadyReplicas < deployment.Status.Replicas {
+		return "rolling_out"
+	}
+
+	// All replicas ready and updated
+	if deployment.Status.ReadyReplicas == deployment.Status.Replicas &&
+		deployment.Status.UpdatedReplicas == deployment.Status.Replicas {
+		return "success"
+	}
+
+	return "progressing"
 }
 
 // SetupWithManager sets up the controller with the Manager.
