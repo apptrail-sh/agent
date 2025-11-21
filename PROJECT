@@ -13,7 +13,7 @@ resources:
     namespaced: true
   domain: apptrail.sh
   group: apptrail
-  kind: DeploymentRolloutState
+  kind: WorkloadRolloutState
   path: github.com/apptrail-sh/controller/api/v1alpha1
   version: v1alpha1
 version: "3"

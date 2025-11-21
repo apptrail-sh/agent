@@ -2,7 +2,7 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/apptrail.apptrail.sh_deploymentrolloutstates.yaml
+- bases/apptrail.apptrail.sh_workloadrolloutstates.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

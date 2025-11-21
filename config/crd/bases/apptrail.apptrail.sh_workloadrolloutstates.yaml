@@ -4,22 +4,22 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.1
-  name: deploymentrolloutstates.apptrail.apptrail.sh
+  name: workloadrolloutstates.apptrail.apptrail.sh
 spec:
   group: apptrail.apptrail.sh
   names:
-    kind: DeploymentRolloutState
-    listKind: DeploymentRolloutStateList
-    plural: deploymentrolloutstates
-    singular: deploymentrolloutstate
+    kind: WorkloadRolloutState
+    listKind: WorkloadRolloutStateList
+    plural: workloadrolloutstates
+    singular: workloadrolloutstate
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-
-          DeploymentRolloutState is the Schema for the deploymentrolloutstates API
-          This resource tracks rollout timing state for deployments across the cluster
+          WorkloadRolloutState is the Schema for the workloadrolloutstates API
+          This resource tracks rollout timing state for workloads (Deployments, StatefulSets, DaemonSets) across the cluster
         properties:
           apiVersion:
             description: |-
@@ -39,15 +39,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of DeploymentRolloutState
+            description: spec defines the desired state of WorkloadRolloutState
             properties:
-              deploymentName:
-                description: DeploymentName is the name of the deployment being tracked
-                type: string
-              deploymentNamespace:
-                description: DeploymentNamespace is the namespace of the deployment
-                  being tracked
-                type: string
               rolloutStarted:
                 description: RolloutStarted is the timestamp when the rollout started
                 format: date-time
@@ -56,10 +49,22 @@ spec:
                 description: Version is the version being rolled out (app.kubernetes.io/version
                   label)
                 type: string
+              workloadKind:
+                description: WorkloadKind is the kind of workload (Deployment, StatefulSet,
+                  DaemonSet)
+                type: string
+              workloadName:
+                description: WorkloadName is the name of the workload being tracked
+                type: string
+              workloadNamespace:
+                description: WorkloadNamespace is the namespace of the workload being
+                  tracked
+                type: string
             required:
-            - deploymentName
-            - deploymentNamespace
             - rolloutStarted
+            - workloadKind
+            - workloadName
+            - workloadNamespace
             type: object
         required:
         - spec

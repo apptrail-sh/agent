@@ -7,7 +7,9 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
+  - statefulsets
   verbs:
   - get
   - list
@@ -15,13 +17,15 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets/status
   - deployments/status
+  - statefulsets/status
   verbs:
   - get
 - apiGroups:
   - apptrail.apptrail.sh
   resources:
-  - deploymentrolloutstates
+  - workloadrolloutstates
   verbs:
   - create
   - delete

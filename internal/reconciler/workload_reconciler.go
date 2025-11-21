@@ -9,7 +9,6 @@ import (
 	"github.com/apptrail-sh/controller/internal/model"
 
 	"github.com/prometheus/client_golang/prometheus"
-	v1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,7 +22,7 @@ import (
 const (
 	appVersionMetricName = "apptrail_app_version"
 
-	// Deployment phases
+	// Workload phases
 	phaseRollingOut  = "rolling_out"
 	phaseFailed      = "failed"
 	phaseSuccess     = "success"
@@ -33,14 +32,17 @@ const (
 var (
 	appVersionGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: appVersionMetricName,
-		Help: "App version for a given deployment",
+		Help: "App version for a given workload (Deployment, StatefulSet, DaemonSet)",
 	}, []string{
 		"namespace",
-		"app",
+		"workload",
+		"kind",
 		"previous_version",
 		"current_version",
 		"last_updated",
 	})
+
+	metricsRegistered = false
 )
 
 type AppVersion struct {
@@ -50,76 +52,68 @@ type AppVersion struct {
 	RolloutStarted  time.Time // When rollout started
 }
 
-type DeploymentReconciler struct {
+// WorkloadReconciler contains shared logic for reconciling workloads
+type WorkloadReconciler struct {
 	client.Client
 	Scheme              *runtime.Scheme
 	Recorder            record.EventRecorder
-	deploymentVersions  map[string]AppVersion
-	deploymentPhases    map[string]string // Track last sent phase
+	workloadVersions    map[string]AppVersion
+	workloadPhases      map[string]string // Track last sent phase
 	publisherChan       chan<- model.WorkloadUpdate
 	controllerNamespace string // Namespace where controller is running
 }
 
-func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) *DeploymentReconciler {
-	metrics.Registry.MustRegister(appVersionGauge)
-	return &DeploymentReconciler{
+func NewWorkloadReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) *WorkloadReconciler {
+	// Register metrics only once
+	if !metricsRegistered {
+		metrics.Registry.MustRegister(appVersionGauge)
+		metricsRegistered = true
+	}
+
+	return &WorkloadReconciler{
 		Client:              client,
 		Scheme:              scheme,
 		Recorder:            recorder,
-		deploymentVersions:  make(map[string]AppVersion),
-		deploymentPhases:    make(map[string]string),
+		workloadVersions:    make(map[string]AppVersion),
+		workloadPhases:      make(map[string]string),
 		publisherChan:       publisherChan,
 		controllerNamespace: controllerNamespace,
 	}
 }
 
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get
-// +kubebuilder:rbac:groups=apptrail.apptrail.sh,resources=deploymentrolloutstates,verbs=get;list;watch;create;update;patch;delete
-
-func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+// ReconcileWorkload contains the shared reconciliation logic for all workload types
+func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Request, workload WorkloadAdapter) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
-	log.Info("Reconciling Deployment")
+	log.Info("Reconciling workload", "kind", workload.GetKind(), "name", workload.GetName())
 
-	resource := &v1.Deployment{}
-	if err := dr.Get(ctx, req.NamespacedName, resource); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Deployment was deleted, clean up state
-			log.Info("Deployment deleted, cleaning up state", "namespace", req.Namespace, "name", req.Name)
-			_ = dr.deleteRolloutStateFromCRD(ctx, req.Namespace, req.Name)
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	log.Info("Deployment found", "Deployment", resource)
+	appkey := workload.GetNamespace() + "/" + workload.GetName() + "/" + workload.GetKind()
+	stored := wr.workloadVersions[appkey]
 
-	appkey := req.Namespace + "/" + req.Name
-	stored := dr.deploymentVersions[appkey]
-
-	versionLabel := resource.Labels["app.kubernetes.io/version"]
+	versionLabel := workload.GetVersion()
 	if versionLabel == "" {
-		log.Info("Deployment version label not found",
-			"Deployment", fmt.Sprintf("%s/%s", req.Namespace, req.Name))
+		log.Info("Workload version label not found",
+			"kind", workload.GetKind(),
+			"workload", fmt.Sprintf("%s/%s", workload.GetNamespace(), workload.GetName()))
 		return ctrl.Result{}, nil
 	}
 
 	// Load persistent state from CRD if in-memory state is empty
 	if stored.RolloutStarted.IsZero() {
-		crdRolloutStarted, err := dr.loadRolloutStateFromCRD(ctx, req.Namespace, req.Name)
+		crdRolloutStarted, err := wr.loadRolloutStateFromCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind())
 		if err != nil {
 			log.Error(err, "Failed to load rollout state from CRD")
 			// Continue with in-memory state
 		} else if !crdRolloutStarted.IsZero() {
 			stored.RolloutStarted = crdRolloutStarted
-			// Update in-memory map so determineDeploymentPhase can access it
-			dr.deploymentVersions[appkey] = stored
+			// Update in-memory map so determineWorkloadPhase can access it
+			wr.workloadVersions[appkey] = stored
 			log.Info("Loaded rollout state from CRD", "rolloutStarted", crdRolloutStarted)
 		}
 	}
 
-	// Determine current deployment phase
-	currentPhase := dr.determineDeploymentPhase(resource, appkey)
-	lastPhase := dr.deploymentPhases[appkey]
+	// Determine current workload phase
+	currentPhase := wr.determineWorkloadPhase(workload, appkey)
+	lastPhase := wr.workloadPhases[appkey]
 
 	// Send event if version changed OR phase changed
 	versionChanged := stored.CurrentVersion != versionLabel
@@ -133,12 +127,12 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// Entering rolling_out phase for the first time
 		stored.RolloutStarted = time.Now()
 		needsPersistence = true
-		log.Info("Rollout started", "deployment", appkey, "time", stored.RolloutStarted)
+		log.Info("Rollout started", "workload", appkey, "time", stored.RolloutStarted)
 	} else if currentPhase != phaseRollingOut && !stored.RolloutStarted.IsZero() {
 		// Left rolling_out phase, clear the timer and delete CRD
 		stored.RolloutStarted = time.Time{}
-		log.Info("Rollout completed, cleaning up state", "deployment", appkey)
-		_ = dr.deleteRolloutStateFromCRD(ctx, req.Namespace, req.Name)
+		log.Info("Rollout completed, cleaning up state", "workload", appkey)
+		_ = wr.deleteRolloutStateFromCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind())
 	}
 
 	if versionChanged || phaseChanged {
@@ -150,37 +144,39 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				LastUpdated:     time.Now(),
 				RolloutStarted:  stored.RolloutStarted, // Preserve rollout timer
 			}
-			dr.deploymentVersions[appkey] = newAppVer
+			wr.workloadVersions[appkey] = newAppVer
 			stored = newAppVer // Update local reference
 
 			timeFormatted := newAppVer.LastUpdated.Format(time.RFC3339)
 
 			labelsToDelete := make(map[string]string)
-			labelsToDelete["namespace"] = resource.Namespace
-			labelsToDelete["app"] = resource.Name
+			labelsToDelete["namespace"] = workload.GetNamespace()
+			labelsToDelete["workload"] = workload.GetName()
+			labelsToDelete["kind"] = workload.GetKind()
 
 			deleted := appVersionGauge.DeletePartialMatch(labelsToDelete)
 			if deleted > 0 {
-				log.Info("Deleted old deployment version metric", "Deployment", resource)
+				log.Info("Deleted old workload version metric", "workload", workload.GetName(), "kind", workload.GetKind())
 			}
 
 			appVersionGauge.WithLabelValues(
-				resource.Namespace,
-				resource.Name,
+				workload.GetNamespace(),
+				workload.GetName(),
+				workload.GetKind(),
 				stored.CurrentVersion,
 				versionLabel,
 				timeFormatted).Set(1)
 		} else {
 			// Version didn't change but we might have updated RolloutStarted
-			dr.deploymentVersions[appkey] = stored
+			wr.workloadVersions[appkey] = stored
 		}
 
 		// Update phase tracking
-		dr.deploymentPhases[appkey] = currentPhase
+		wr.workloadPhases[appkey] = currentPhase
 
 		// Persist rollout state to CRD if needed
 		if needsPersistence && !stored.RolloutStarted.IsZero() {
-			err := dr.saveRolloutStateToCRD(ctx, req.Namespace, req.Name, versionLabel, stored.RolloutStarted)
+			err := wr.saveRolloutStateToCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind(), versionLabel, stored.RolloutStarted)
 			if err != nil {
 				log.Error(err, "Failed to persist rollout state to CRD")
 				// Don't fail the reconciliation, continue with in-memory state
@@ -188,37 +184,39 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		// Send event with current state
-		dr.publisherChan <- model.WorkloadUpdate{
-			Name:            resource.Name,
-			Namespace:       resource.Namespace,
-			Kind:            resource.Kind,
+		wr.publisherChan <- model.WorkloadUpdate{
+			Name:            workload.GetName(),
+			Namespace:       workload.GetNamespace(),
+			Kind:            workload.GetKind(),
 			PreviousVersion: stored.CurrentVersion,
 			CurrentVersion:  versionLabel,
-			Labels:          resource.Labels,
+			Labels:          workload.GetLabels(),
 
-			// Deployment status
+			// Workload status
 			DeploymentPhase:   currentPhase,
-			ReplicasTotal:     resource.Status.Replicas,
-			ReplicasReady:     resource.Status.ReadyReplicas,
-			ReplicasUpdated:   resource.Status.UpdatedReplicas,
-			ReplicasAvailable: resource.Status.AvailableReplicas,
+			ReplicasTotal:     workload.GetTotalReplicas(),
+			ReplicasReady:     workload.GetReadyReplicas(),
+			ReplicasUpdated:   workload.GetUpdatedReplicas(),
+			ReplicasAvailable: workload.GetAvailableReplicas(),
 		}
 
 		if versionChanged {
-			log.Info("Deployment version updated",
-				"Deployment", resource,
+			log.Info("Workload version updated",
+				"kind", workload.GetKind(),
+				"workload", workload.GetName(),
 				"phase", currentPhase,
-				"replicas", fmt.Sprintf("%d/%d ready", resource.Status.ReadyReplicas, resource.Status.Replicas))
+				"replicas", fmt.Sprintf("%d/%d ready", workload.GetReadyReplicas(), workload.GetTotalReplicas()))
 		} else {
-			log.Info("Deployment phase updated",
-				"Deployment", resource,
+			log.Info("Workload phase updated",
+				"kind", workload.GetKind(),
+				"workload", workload.GetName(),
 				"previousPhase", lastPhase,
 				"currentPhase", currentPhase,
-				"replicas", fmt.Sprintf("%d/%d ready", resource.Status.ReadyReplicas, resource.Status.Replicas))
+				"replicas", fmt.Sprintf("%d/%d ready", workload.GetReadyReplicas(), workload.GetTotalReplicas()))
 		}
 	}
 
-	// If deployment is rolling out, requeue to check timeout periodically
+	// If workload is rolling out, requeue to check timeout periodically
 	if currentPhase == phaseRollingOut {
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
@@ -226,30 +224,21 @@ func (dr *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-// determineDeploymentPhase determines the deployment phase based on Kubernetes status
-func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployment, appkey string) string {
+// determineWorkloadPhase determines the workload phase based on Kubernetes status
+func (wr *WorkloadReconciler) determineWorkloadPhase(workload WorkloadAdapter, appkey string) string {
 	// Check replica status to determine if rolling out
-	isRollingOut := deployment.Status.UpdatedReplicas < deployment.Status.Replicas ||
-		deployment.Status.ReadyReplicas < deployment.Status.Replicas
+	isRollingOut := workload.IsRollingOut()
 
 	// Check for explicit failure conditions from Kubernetes
-	for _, condition := range deployment.Status.Conditions {
-		switch condition.Type {
-		case v1.DeploymentProgressing:
-			if condition.Status == "False" {
-				return phaseFailed
-			}
-			if condition.Reason == "ProgressDeadlineExceeded" {
-				return phaseFailed
-			}
-		}
+	if workload.HasFailed() {
+		return phaseFailed
 	}
 
 	// If rolling out, check timeout BEFORE returning rolling_out status
 	if isRollingOut {
 		// Additional check: Has rollout been in progress too long?
 		// This catches cases where Flux/ArgoCD resets the K8s progress deadline
-		stored := dr.deploymentVersions[appkey]
+		stored := wr.workloadVersions[appkey]
 		if !stored.RolloutStarted.IsZero() {
 			elapsed := time.Since(stored.RolloutStarted)
 			// Force failed after 15 minutes (longer than K8s default to account for resets)
@@ -261,8 +250,8 @@ func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployme
 	}
 
 	// All replicas ready and updated
-	if deployment.Status.ReadyReplicas == deployment.Status.Replicas &&
-		deployment.Status.UpdatedReplicas == deployment.Status.Replicas {
+	if workload.GetReadyReplicas() == workload.GetTotalReplicas() &&
+		workload.GetUpdatedReplicas() == workload.GetTotalReplicas() {
 		return phaseSuccess
 	}
 
@@ -270,15 +259,15 @@ func (dr *DeploymentReconciler) determineDeploymentPhase(deployment *v1.Deployme
 }
 
 // loadRolloutStateFromCRD loads the rollout state from the CRD if it exists
-func (dr *DeploymentReconciler) loadRolloutStateFromCRD(ctx context.Context, namespace, name string) (time.Time, error) {
+func (wr *WorkloadReconciler) loadRolloutStateFromCRD(ctx context.Context, namespace, name, kind string) (time.Time, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	stateName := fmt.Sprintf("%s-%s", namespace, name)
-	state := &apptrailv1alpha1.DeploymentRolloutState{}
+	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, kind)
+	state := &apptrailv1alpha1.WorkloadRolloutState{}
 
-	err := dr.Get(ctx, types.NamespacedName{
+	err := wr.Get(ctx, types.NamespacedName{
 		Name:      stateName,
-		Namespace: dr.controllerNamespace,
+		Namespace: wr.controllerNamespace,
 	}, state)
 
 	if err != nil {
@@ -293,39 +282,40 @@ func (dr *DeploymentReconciler) loadRolloutStateFromCRD(ctx context.Context, nam
 }
 
 // saveRolloutStateToCRD saves the rollout state to a CRD
-func (dr *DeploymentReconciler) saveRolloutStateToCRD(ctx context.Context, namespace, name, version string, rolloutStarted time.Time) error {
+func (wr *WorkloadReconciler) saveRolloutStateToCRD(ctx context.Context, namespace, name, kind, version string, rolloutStarted time.Time) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	stateName := fmt.Sprintf("%s-%s", namespace, name)
-	state := &apptrailv1alpha1.DeploymentRolloutState{
+	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, kind)
+	state := &apptrailv1alpha1.WorkloadRolloutState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stateName,
-			Namespace: dr.controllerNamespace,
+			Namespace: wr.controllerNamespace,
 		},
-		Spec: apptrailv1alpha1.DeploymentRolloutStateSpec{
-			DeploymentNamespace: namespace,
-			DeploymentName:      name,
-			Version:             version,
-			RolloutStarted:      metav1.Time{Time: rolloutStarted},
+		Spec: apptrailv1alpha1.WorkloadRolloutStateSpec{
+			WorkloadNamespace: namespace,
+			WorkloadName:      name,
+			WorkloadKind:      kind,
+			Version:           version,
+			RolloutStarted:    metav1.Time{Time: rolloutStarted},
 		},
 	}
 
 	// Try to create, if it exists, update it
-	err := dr.Create(ctx, state)
+	err := wr.Create(ctx, state)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// Update existing state
-			existingState := &apptrailv1alpha1.DeploymentRolloutState{}
-			err = dr.Get(ctx, types.NamespacedName{
+			existingState := &apptrailv1alpha1.WorkloadRolloutState{}
+			err = wr.Get(ctx, types.NamespacedName{
 				Name:      stateName,
-				Namespace: dr.controllerNamespace,
+				Namespace: wr.controllerNamespace,
 			}, existingState)
 			if err != nil {
 				return err
 			}
 
 			existingState.Spec = state.Spec
-			err = dr.Update(ctx, existingState)
+			err = wr.Update(ctx, existingState)
 			if err != nil {
 				log.Error(err, "Failed to update rollout state", "stateName", stateName)
 				return err
@@ -340,18 +330,18 @@ func (dr *DeploymentReconciler) saveRolloutStateToCRD(ctx context.Context, names
 }
 
 // deleteRolloutStateFromCRD deletes the rollout state CRD
-func (dr *DeploymentReconciler) deleteRolloutStateFromCRD(ctx context.Context, namespace, name string) error {
+func (wr *WorkloadReconciler) deleteRolloutStateFromCRD(ctx context.Context, namespace, name, kind string) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	stateName := fmt.Sprintf("%s-%s", namespace, name)
-	state := &apptrailv1alpha1.DeploymentRolloutState{
+	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, kind)
+	state := &apptrailv1alpha1.WorkloadRolloutState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stateName,
-			Namespace: dr.controllerNamespace,
+			Namespace: wr.controllerNamespace,
 		},
 	}
 
-	err := dr.Delete(ctx, state)
+	err := wr.Delete(ctx, state)
 	if err != nil && !apierrors.IsNotFound(err) {
 		log.Error(err, "Failed to delete rollout state", "stateName", stateName)
 		return err
@@ -360,9 +350,9 @@ func (dr *DeploymentReconciler) deleteRolloutStateFromCRD(ctx context.Context, n
 	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (dr *DeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1.Deployment{}).
-		Complete(dr)
+// HandleDeletion handles cleanup when a workload is deleted
+func (wr *WorkloadReconciler) HandleDeletion(ctx context.Context, namespace, name, kind string) error {
+	log := ctrl.LoggerFrom(ctx)
+	log.Info("Workload deleted, cleaning up state", "kind", kind, "namespace", namespace, "name", name)
+	return wr.deleteRolloutStateFromCRD(ctx, namespace, name, kind)
 }

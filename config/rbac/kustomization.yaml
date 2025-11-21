@@ -22,7 +22,7 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- deploymentrolloutstate_admin_role.yaml
-- deploymentrolloutstate_editor_role.yaml
-- deploymentrolloutstate_viewer_role.yaml
+- workloadrolloutstate_admin_role.yaml
+- workloadrolloutstate_editor_role.yaml
+- workloadrolloutstate_viewer_role.yaml
 

@@ -2,7 +2,7 @@
 
 ## Quick Reference
 
-**What is this?** Kubernetes controller that watches Deployments for version changes (`app.kubernetes.io/version` label), exports Prometheus metrics, and sends notifications.
+**What is this?** Kubernetes controller that watches workloads (Deployments, StatefulSets, DaemonSets) for version changes (`app.kubernetes.io/version` label), exports Prometheus metrics, and sends notifications.
 
 **Tech**: Go 1.24.6 | Kubebuilder v4 | controller-runtime v0.22.3 | Domain: apptrail.sh
 
@@ -38,13 +38,20 @@ Register metrics **only once** in constructor, never in reconcile loop.
 
 ## Project Structure
 ```
-cmd/main.go                      # Manager setup, publisher registration
-internal/reconciler/deployment.go  # Reconciliation logic
-internal/hooks/                  # Event publishing system
-  - notifier.go                  # EventPublisher interface
-  - notifications.go             # EventPublisherQueue
-  - controlplane/                # Control Plane HTTP publisher
-  - slack/                       # Slack publisher
+cmd/main.go                             # Manager setup, publisher registration
+internal/reconciler/                    # Reconciliation logic
+  - workload.go                         # WorkloadAdapter interface
+  - workload_reconciler.go              # Shared reconciliation logic
+  - deployment_reconciler.go            # Deployment-specific reconciler
+  - statefulset_reconciler.go           # StatefulSet-specific reconciler
+  - daemonset_reconciler.go             # DaemonSet-specific reconciler
+internal/hooks/                         # Event publishing system
+  - notifier.go                         # EventPublisher interface
+  - notifications.go                    # EventPublisherQueue
+  - controlplane/                       # Control Plane HTTP publisher
+  - slack/                              # Slack publisher
+api/v1alpha1/                           # CRDs
+  - workloadrolloutstate_types.go       # WorkloadRolloutState CRD
 ```
 
 ## Common Commands
@@ -65,24 +72,31 @@ Send events to control plane via HTTP:
 
 Or via env vars: `CLUSTER_ID`, `ENVIRONMENT`
 
-**Sends all Deployment labels** including:
+**Sends all workload labels** including:
 - `app.kubernetes.io/version` (required for version tracking)
 - `team` (for team organization)
 - All other custom labels (Git metadata, etc.)
 - Plus cluster metadata: `cluster_name` (from cluster-id), `environment` (if set)
 
-## Deployment Phase Tracking
+## Workload Phase Tracking
 
-Controller tracks phase changes and sends updates:
+Controller tracks phase changes and sends updates for all workload types:
 - Version change triggers immediate event
 - Phase changes (rolling_out → success/failed) trigger events
 - **Custom 15-minute timeout** - Forces "failed" if rollout exceeds 15 min
   (Handles Flux/ArgoCD resetting K8s progressDeadlineSeconds)
+- Uses WorkloadAdapter pattern to share logic across Deployments, StatefulSets, DaemonSets
+
+## Supported Workload Types
+- **Deployments**: Full support with rollout tracking
+- **StatefulSets**: Tracks ordered rollouts, monitors updated replicas
+- **DaemonSets**: Monitors node-by-node updates across cluster
 
 ## Key Gotchas
-- Version label `app.kubernetes.io/version` required on Deployments
+- Version label `app.kubernetes.io/version` required on all tracked workloads
 - Event publisher channel buffer: 100
 - Leader election ID: `ce02bd06.apptrail.sh`
 - HTTP/2 disabled by default (security)
 - Control plane HTTP publisher requires `--cluster-id` when enabled
 - Sends phase updates even when version unchanged
+- WorkloadRolloutState CRD replaces DeploymentRolloutState

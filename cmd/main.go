@@ -195,13 +195,14 @@ func main() {
 	go publisherQueue.Loop()
 
 	// Get the namespace where the controller is running
-	// This is used to store DeploymentRolloutState CRDs
+	// This is used to store WorkloadRolloutState CRDs
 	controllerNamespace := os.Getenv("POD_NAMESPACE")
 	if controllerNamespace == "" {
 		controllerNamespace = "apptrail-system" // Default namespace
 		setupLog.Info("POD_NAMESPACE not set, using default", "namespace", controllerNamespace)
 	}
 
+	// Setup Deployment reconciler
 	deploymentReconciler := reconciler.NewDeploymentReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
@@ -211,6 +212,32 @@ func main() {
 
 	if err = deploymentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDeployment")
+		os.Exit(1)
+	}
+
+	// Setup StatefulSet reconciler
+	statefulSetReconciler := reconciler.NewStatefulSetReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("apptrail-controller"),
+		publisherChan,
+		controllerNamespace)
+
+	if err = statefulSetReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AppTrailStatefulSet")
+		os.Exit(1)
+	}
+
+	// Setup DaemonSet reconciler
+	daemonSetReconciler := reconciler.NewDaemonSetReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("apptrail-controller"),
+		publisherChan,
+		controllerNamespace)
+
+	if err = daemonSetReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDaemonSet")
 		os.Exit(1)
 	}
 

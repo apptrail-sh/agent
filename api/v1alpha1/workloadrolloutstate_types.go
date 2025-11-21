@@ -20,18 +20,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// DeploymentRolloutStateSpec defines the desired state of DeploymentRolloutState
-type DeploymentRolloutStateSpec struct {
-	// DeploymentNamespace is the namespace of the deployment being tracked
+// WorkloadRolloutStateSpec defines the desired state of WorkloadRolloutState
+type WorkloadRolloutStateSpec struct {
+	// WorkloadNamespace is the namespace of the workload being tracked
 	// +required
-	DeploymentNamespace string `json:"deploymentNamespace"`
+	WorkloadNamespace string `json:"workloadNamespace"`
 
-	// DeploymentName is the name of the deployment being tracked
+	// WorkloadName is the name of the workload being tracked
 	// +required
-	DeploymentName string `json:"deploymentName"`
+	WorkloadName string `json:"workloadName"`
+
+	// WorkloadKind is the kind of workload (Deployment, StatefulSet, DaemonSet)
+	// +required
+	WorkloadKind string `json:"workloadKind"`
 
 	// RolloutStarted is the timestamp when the rollout started
 	// +required
@@ -44,29 +45,29 @@ type DeploymentRolloutStateSpec struct {
 
 // +kubebuilder:object:root=true
 
-// DeploymentRolloutState is the Schema for the deploymentrolloutstates API
-// This resource tracks rollout timing state for deployments across the cluster
-type DeploymentRolloutState struct {
+// WorkloadRolloutState is the Schema for the workloadrolloutstates API
+// This resource tracks rollout timing state for workloads (Deployments, StatefulSets, DaemonSets) across the cluster
+type WorkloadRolloutState struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of DeploymentRolloutState
+	// spec defines the desired state of WorkloadRolloutState
 	// +required
-	Spec DeploymentRolloutStateSpec `json:"spec"`
+	Spec WorkloadRolloutStateSpec `json:"spec"`
 }
 
 // +kubebuilder:object:root=true
 
-// DeploymentRolloutStateList contains a list of DeploymentRolloutState
-type DeploymentRolloutStateList struct {
+// WorkloadRolloutStateList contains a list of WorkloadRolloutState
+type WorkloadRolloutStateList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []DeploymentRolloutState `json:"items"`
+	Items           []WorkloadRolloutState `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&DeploymentRolloutState{}, &DeploymentRolloutStateList{})
+	SchemeBuilder.Register(&WorkloadRolloutState{}, &WorkloadRolloutStateList{})
 }

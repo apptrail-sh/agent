@@ -1,4 +1,4 @@
 ## Append samples of your project ##
 resources:
-- apptrail_v1alpha1_deploymentrolloutstate.yaml
+- apptrail_v1alpha1_workloadrolloutstate.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
