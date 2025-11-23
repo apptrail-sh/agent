@@ -100,3 +100,9 @@ Controller tracks phase changes and sends updates for all workload types:
 - Control plane HTTP publisher requires `--cluster-id` when enabled
 - Sends phase updates even when version unchanged
 - WorkloadRolloutState CRD replaces DeploymentRolloutState
+
+## Development Rules
+- **NEVER** create documentation files (*.md, README, etc.) unless explicitly requested
+- **NEVER** create files outside workspace directories (no `/tmp/`, `/var/`, etc.)
+- Use `make build` or `go build` in workspace only
+- Implement code changes directly, don't create example files
