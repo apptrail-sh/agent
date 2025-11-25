@@ -21,12 +21,12 @@ import (
 	"flag"
 	"os"
 
-	"github.com/apptrail-sh/controller/internal/hooks"
-	"github.com/apptrail-sh/controller/internal/hooks/controlplane"
-	"github.com/apptrail-sh/controller/internal/hooks/slack"
-	"github.com/apptrail-sh/controller/internal/model"
+	"github.com/apptrail-sh/agent/internal/hooks"
+	"github.com/apptrail-sh/agent/internal/hooks/controlplane"
+	"github.com/apptrail-sh/agent/internal/hooks/slack"
+	"github.com/apptrail-sh/agent/internal/model"
 
-	"github.com/apptrail-sh/controller/internal/reconciler"
+	"github.com/apptrail-sh/agent/internal/reconciler"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -42,7 +42,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	apptrailv1alpha1 "github.com/apptrail-sh/controller/api/v1alpha1"
+	apptrailv1alpha1 "github.com/apptrail-sh/agent/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -206,7 +206,7 @@ func main() {
 	deploymentReconciler := reconciler.NewDeploymentReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		mgr.GetEventRecorderFor("apptrail-controller"),
+		mgr.GetEventRecorderFor("apptrail-agent"),
 		publisherChan,
 		controllerNamespace)
 
@@ -219,7 +219,7 @@ func main() {
 	statefulSetReconciler := reconciler.NewStatefulSetReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		mgr.GetEventRecorderFor("apptrail-controller"),
+		mgr.GetEventRecorderFor("apptrail-agent"),
 		publisherChan,
 		controllerNamespace)
 
@@ -232,7 +232,7 @@ func main() {
 	daemonSetReconciler := reconciler.NewDaemonSetReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		mgr.GetEventRecorderFor("apptrail-controller"),
+		mgr.GetEventRecorderFor("apptrail-agent"),
 		publisherChan,
 		controllerNamespace)
 

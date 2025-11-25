@@ -1,4 +1,4 @@
-module github.com/apptrail-sh/controller
+module github.com/apptrail-sh/agent
 
 go 1.24.6
 

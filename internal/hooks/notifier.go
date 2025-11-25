@@ -3,7 +3,7 @@ package hooks
 import (
 	"context"
 
-	"github.com/apptrail-sh/controller/internal/model"
+	"github.com/apptrail-sh/agent/internal/model"
 )
 
 type EventPublisher interface {

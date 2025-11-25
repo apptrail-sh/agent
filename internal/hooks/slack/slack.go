@@ -9,7 +9,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/apptrail-sh/controller/internal/model"
+	"github.com/apptrail-sh/agent/internal/model"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 

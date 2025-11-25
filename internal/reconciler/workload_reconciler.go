@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	apptrailv1alpha1 "github.com/apptrail-sh/controller/api/v1alpha1"
-	"github.com/apptrail-sh/controller/internal/model"
+	apptrailv1alpha1 "github.com/apptrail-sh/agent/api/v1alpha1"
+	"github.com/apptrail-sh/agent/internal/model"
 
 	"github.com/prometheus/client_golang/prometheus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

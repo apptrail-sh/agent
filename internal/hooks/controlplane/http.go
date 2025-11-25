@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/apptrail-sh/controller/internal/model"
+	"github.com/apptrail-sh/agent/internal/model"
 	"github.com/google/uuid"
 	"resty.dev/v3"
 	"sigs.k8s.io/controller-runtime/pkg/log"
