@@ -5,6 +5,15 @@
 domain: apptrail.sh
 layout:
 - go.kubebuilder.io/v4
-projectName: controller
-repo: github.com/apptrail-sh/controller
+projectName: agent
+repo: github.com/apptrail-sh/agent
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: apptrail.sh
+  group: apptrail
+  kind: WorkloadRolloutState
+  path: github.com/apptrail-sh/agent/api/v1alpha1
+  version: v1alpha1
 version: "3"

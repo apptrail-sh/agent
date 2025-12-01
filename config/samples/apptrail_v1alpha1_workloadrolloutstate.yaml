@@ -1,0 +1,12 @@
+apiVersion: apptrail.apptrail.sh/v1alpha1
+kind: WorkloadRolloutState
+metadata:
+  name: example-workloadrolloutstate
+  namespace: apptrail-system
+spec:
+  workloadNamespace: default
+  workloadName: myapp
+  workloadKind: Deployment
+  rolloutStarted: "2024-01-01T00:00:00Z"
+  version: "v1.0.0"
+

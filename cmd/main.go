@@ -17,15 +17,18 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 
-	"github.com/apptrail-sh/controller/internal/hooks"
-	"github.com/apptrail-sh/controller/internal/hooks/slack"
-	"github.com/apptrail-sh/controller/internal/model"
+	"github.com/apptrail-sh/agent/internal/hooks"
+	"github.com/apptrail-sh/agent/internal/hooks/controlplane"
+	"github.com/apptrail-sh/agent/internal/hooks/pubsub"
+	"github.com/apptrail-sh/agent/internal/hooks/slack"
+	"github.com/apptrail-sh/agent/internal/model"
 
-	"github.com/apptrail-sh/controller/internal/reconciler"
+	"github.com/apptrail-sh/agent/internal/reconciler"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -40,6 +43,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	apptrailv1alpha1 "github.com/apptrail-sh/agent/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -51,6 +56,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(apptrailv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -62,6 +68,10 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var slackWebhookURL string
+	var controlPlaneURL string
+	var clusterID string
+	var environment string
+	var pubsubTopicID string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -73,6 +83,14 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&slackWebhookURL, "slack-webhook-url", "", "The URL to send slack notifications to")
+	flag.StringVar(&controlPlaneURL, "controlplane-url", "",
+		"The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/api/v1/events)")
+	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"),
+		"Unique identifier for this cluster (e.g., staging.stg01)")
+	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"),
+		"Environment for events without namespace mapping (optional)")
+	flag.StringVar(&pubsubTopicID, "pubsub-topic-id", os.Getenv("PUBSUB_TOPIC_ID"),
+		"Google Cloud Pub/Sub topic ID to publish events to (enables Pub/Sub when set)")
 
 	opts := zap.Options{
 		Development: true,
@@ -149,24 +167,102 @@ func main() {
 		os.Exit(1)
 	}
 
-	notifierChan := make(chan model.WorkloadUpdate, 100)
+	publisherChan := make(chan model.WorkloadUpdate, 100)
 
-	var notifiers = []hooks.Notifier{}
+	var publishers = []hooks.EventPublisher{}
+
+	// Register Slack publisher if configured
 	if slackWebhookURL != "" {
-		slackNotifier := slack.NewSlackNotifier(slackWebhookURL)
-		notifiers = append(notifiers, slackNotifier)
+		slackPublisher := slack.NewSlackPublisher(slackWebhookURL)
+		publishers = append(publishers, slackPublisher)
+		setupLog.Info("Slack publisher enabled", "webhook", slackWebhookURL)
 	}
-	notifierQueue := hooks.NewNotifierQueue(notifierChan, notifiers)
-	go notifierQueue.Loop()
 
+	// Register Control Plane publisher if configured
+	if controlPlaneURL != "" {
+		if clusterID == "" {
+			setupLog.Error(nil, "cluster-id is required when controlplane-url is set")
+			os.Exit(1)
+		}
+		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, environment)
+		publishers = append(publishers, cpPublisher)
+		setupLog.Info("Control Plane publisher enabled",
+			"endpoint", controlPlaneURL,
+			"clusterID", clusterID,
+			"environment", environment)
+	}
+
+	// Register Google Pub/Sub publisher if configured
+	if pubsubTopicID != "" {
+		if clusterID == "" {
+			setupLog.Error(nil, "cluster-id is required when pubsub is enabled")
+			os.Exit(1)
+		}
+		ctx := context.Background()
+		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopicID, clusterID, environment)
+		if err != nil {
+			setupLog.Error(err, "unable to create Pub/Sub publisher",
+				"hint", "Ensure valid credentials via Workload Identity, GOOGLE_APPLICATION_CREDENTIALS, or gcloud auth")
+			os.Exit(1)
+		}
+		publishers = append(publishers, pubsubPublisher)
+		setupLog.Info("Google Pub/Sub publisher enabled",
+			"topicID", pubsubTopicID,
+			"clusterID", clusterID,
+			"environment", environment)
+	}
+
+	if len(publishers) == 0 {
+		setupLog.Info("No event publishers configured, events will only be exported as metrics")
+	}
+
+	publisherQueue := hooks.NewEventPublisherQueue(publisherChan, publishers)
+	go publisherQueue.Loop()
+
+	// Get the namespace where the controller is running
+	// This is used to store WorkloadRolloutState CRDs
+	controllerNamespace := os.Getenv("POD_NAMESPACE")
+	if controllerNamespace == "" {
+		controllerNamespace = "apptrail-system" // Default namespace
+		setupLog.Info("POD_NAMESPACE not set, using default", "namespace", controllerNamespace)
+	}
+
+	// Setup Deployment reconciler
 	deploymentReconciler := reconciler.NewDeploymentReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
-		mgr.GetEventRecorderFor("apptrail-controller"),
-		notifierChan)
+		mgr.GetEventRecorderFor("apptrail-agent"),
+		publisherChan,
+		controllerNamespace)
 
 	if err = deploymentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDeployment")
+		os.Exit(1)
+	}
+
+	// Setup StatefulSet reconciler
+	statefulSetReconciler := reconciler.NewStatefulSetReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("apptrail-agent"),
+		publisherChan,
+		controllerNamespace)
+
+	if err = statefulSetReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AppTrailStatefulSet")
+		os.Exit(1)
+	}
+
+	// Setup DaemonSet reconciler
+	daemonSetReconciler := reconciler.NewDaemonSetReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("apptrail-agent"),
+		publisherChan,
+		controllerNamespace)
+
+	if err = daemonSetReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDaemonSet")
 		os.Exit(1)
 	}
 

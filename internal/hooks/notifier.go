@@ -3,9 +3,9 @@ package hooks
 import (
 	"context"
 
-	"github.com/apptrail-sh/controller/internal/model"
+	"github.com/apptrail-sh/agent/internal/model"
 )
 
-type Notifier interface {
-	Notify(ctx context.Context, update model.WorkloadUpdate) error
+type EventPublisher interface {
+	Publish(ctx context.Context, update model.WorkloadUpdate) error
 }

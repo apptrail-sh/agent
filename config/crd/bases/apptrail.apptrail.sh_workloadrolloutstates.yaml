@@ -1,0 +1,73 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  name: workloadrolloutstates.apptrail.apptrail.sh
+spec:
+  group: apptrail.apptrail.sh
+  names:
+    kind: WorkloadRolloutState
+    listKind: WorkloadRolloutStateList
+    plural: workloadrolloutstates
+    singular: workloadrolloutstate
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          WorkloadRolloutState is the Schema for the workloadrolloutstates API
+          This resource tracks rollout timing state for workloads (Deployments, StatefulSets, DaemonSets) across the cluster
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of WorkloadRolloutState
+            properties:
+              rolloutStarted:
+                description: RolloutStarted is the timestamp when the rollout started
+                format: date-time
+                type: string
+              version:
+                description: Version is the version being rolled out (app.kubernetes.io/version
+                  label)
+                type: string
+              workloadKind:
+                description: WorkloadKind is the kind of workload (Deployment, StatefulSet,
+                  DaemonSet)
+                type: string
+              workloadName:
+                description: WorkloadName is the name of the workload being tracked
+                type: string
+              workloadNamespace:
+                description: WorkloadNamespace is the namespace of the workload being
+                  tracked
+                type: string
+            required:
+            - rolloutStarted
+            - workloadKind
+            - workloadName
+            - workloadNamespace
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
