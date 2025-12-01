@@ -177,6 +177,6 @@ func (p *PubSubPublisher) Stop() {
 		p.publisher.Stop()
 	}
 	if p.client != nil {
-		p.client.Close()
+		_ = p.client.Close()
 	}
 }
