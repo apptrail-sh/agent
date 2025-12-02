@@ -71,7 +71,7 @@ func main() {
 	var controlPlaneURL string
 	var clusterID string
 	var environment string
-	var pubsubTopicID string
+	var pubsubTopic string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -89,8 +89,8 @@ func main() {
 		"Unique identifier for this cluster (e.g., staging.stg01)")
 	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"),
 		"Environment for events without namespace mapping (optional)")
-	flag.StringVar(&pubsubTopicID, "pubsub-topic-id", os.Getenv("PUBSUB_TOPIC_ID"),
-		"Google Cloud Pub/Sub topic ID to publish events to (enables Pub/Sub when set)")
+	flag.StringVar(&pubsubTopic, "pubsub-topic", os.Getenv("PUBSUB_TOPIC"),
+		"Google Cloud Pub/Sub topic path (projects/<project>/topics/<topic>)")
 
 	opts := zap.Options{
 		Development: true,
@@ -193,13 +193,13 @@ func main() {
 	}
 
 	// Register Google Pub/Sub publisher if configured
-	if pubsubTopicID != "" {
+	if pubsubTopic != "" {
 		if clusterID == "" {
 			setupLog.Error(nil, "cluster-id is required when pubsub is enabled")
 			os.Exit(1)
 		}
 		ctx := context.Background()
-		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopicID, clusterID, environment)
+		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopic, clusterID, environment)
 		if err != nil {
 			setupLog.Error(err, "unable to create Pub/Sub publisher",
 				"hint", "Ensure valid credentials via Workload Identity, GOOGLE_APPLICATION_CREDENTIALS, or gcloud auth")
@@ -207,7 +207,7 @@ func main() {
 		}
 		publishers = append(publishers, pubsubPublisher)
 		setupLog.Info("Google Pub/Sub publisher enabled",
-			"topicID", pubsubTopicID,
+			"topic", pubsubTopic,
 			"clusterID", clusterID,
 			"environment", environment)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/pubsub/v2"
@@ -16,35 +17,53 @@ import (
 type PubSubPublisher struct {
 	client      *pubsub.Client
 	publisher   *pubsub.Publisher
-	topicID     string
+	topicPath   string
 	clusterID   string
 	environment string
 }
 
+// ParseTopicPath parses a full Pub/Sub topic path and returns projectID and topicID.
+// Expected format: projects/<project>/topics/<topic>
+func ParseTopicPath(topicPath string) (projectID, topicID string, err error) {
+	parts := strings.Split(topicPath, "/")
+	if len(parts) != 4 || parts[0] != "projects" || parts[2] != "topics" {
+		return "", "", fmt.Errorf("invalid topic path %q: expected format projects/<project>/topics/<topic>", topicPath)
+	}
+	return parts[1], parts[3], nil
+}
+
 // NewPubSubPublisher creates a new Google Cloud Pub/Sub publisher
 //
-// Authentication and project ID are handled via Application Default Credentials (ADC):
+// Authentication is handled via Application Default Credentials (ADC):
 //   - Workload Identity (GKE): Auto-detected from metadata server (recommended)
 //   - Service Account JSON key: Set GOOGLE_APPLICATION_CREDENTIALS env var
 //   - Default credentials: gcloud auth application-default login
 //
 // Parameters:
-//   - topicID: Pub/Sub topic ID to publish events to
+//   - topicPath: Full Pub/Sub topic path (projects/<project>/topics/<topic>)
 //   - clusterID: Unique identifier for this cluster
 //   - environment: Optional environment name
-func NewPubSubPublisher(ctx context.Context, topicID, clusterID, environment string) (*PubSubPublisher, error) {
-	// Use DetectProjectID to auto-detect from ADC (Workload Identity, env vars, or credentials file)
-	client, err := pubsub.NewClient(ctx, pubsub.DetectProjectID)
+func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment string) (*PubSubPublisher, error) {
+	projectID, topicID, err := ParseTopicPath(topicPath)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := pubsub.NewClient(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pubsub client: %w", err)
 	}
 
+	// Enable message ordering to guarantee events for the same workload
+	// are delivered in the order they were published.
+	// The subscription must also have message ordering enabled.
 	publisher := client.Publisher(topicID)
+	publisher.EnableMessageOrdering = true
 
 	return &PubSubPublisher{
 		client:      client,
 		publisher:   publisher,
-		topicID:     topicID,
+		topicPath:   topicPath,
 		clusterID:   clusterID,
 		environment: environment,
 	}, nil
@@ -123,13 +142,19 @@ func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpda
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
+	// Ordering key ensures events for the same workload are delivered in order.
+	// Format: cluster/namespace/workload_name
+	orderingKey := fmt.Sprintf("%s/%s/%s", p.clusterID, update.Namespace, update.Name)
+
 	logger.Info("Publishing event to Google Pub/Sub",
-		"topic", p.topicID,
+		"topic", p.topicPath,
 		"eventID", event.ID,
+		"orderingKey", orderingKey,
 		"namespace", update.Namespace,
 		"name", update.Name,
 		"currentVersion", update.CurrentVersion,
 		"previousVersion", update.PreviousVersion,
+		"deploymentPhase", update.DeploymentPhase,
 	)
 
 	attributes := map[string]string{
@@ -147,21 +172,22 @@ func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpda
 	}
 
 	result := p.publisher.Publish(ctx, &pubsub.Message{
-		Data:       data,
-		Attributes: attributes,
+		Data:        data,
+		Attributes:  attributes,
+		OrderingKey: orderingKey,
 	})
 
 	msgID, err := result.Get(ctx)
 	if err != nil {
 		logger.Error(err, "Failed to publish event to Pub/Sub",
-			"topic", p.topicID,
+			"topic", p.topicPath,
 			"eventID", event.ID,
 		)
 		return fmt.Errorf("failed to publish event to pubsub: %w", err)
 	}
 
 	logger.Info("Event successfully published to Google Pub/Sub",
-		"topic", p.topicID,
+		"topic", p.topicPath,
 		"eventID", event.ID,
 		"messageID", msgID,
 		"namespace", update.Namespace,

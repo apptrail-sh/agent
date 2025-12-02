@@ -28,9 +28,9 @@ make generate                        # After kubebuilder marker changes
 - `--controlplane-url` (Control Plane HTTP endpoint)
 - `--cluster-id` (required for control plane)
 - `--environment` (optional, can use environment mapping)
-- `--pubsub-topic-id` (GCP Pub/Sub, project auto-detected from credentials)
+- `--pubsub-topic` (GCP Pub/Sub, format: `projects/<project>/topics/<topic>`)
 
-Env vars: `CLUSTER_ID`, `ENVIRONMENT`, `PUBSUB_TOPIC_ID`
+Env vars: `CLUSTER_ID`, `ENVIRONMENT`, `PUBSUB_TOPIC`
 
 ## Before Committing
 1. Run `make test && make lint`
