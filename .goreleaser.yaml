@@ -77,8 +77,9 @@ docker_manifests:
       - ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}-amd64
       - ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}-arm64v8
 
-extra_files:
-  - glob: config/crd/bases/*.yaml
+release:
+  extra_files:
+    - glob: config/crd/bases/*.yaml
 
 changelog:
   sort: asc
