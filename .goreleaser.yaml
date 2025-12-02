@@ -1,5 +1,7 @@
 version: 2
 
+project_name: agent
+
 before:
   hooks:
     - go mod tidy
@@ -32,50 +34,50 @@ dockers:
     goos: linux
     goarch: amd64
     image_templates:
-      - "docker.io/apptrail/controller:{{ .Version }}-amd64"
-      - "docker.io/apptrail/controller:{{ .Major }}.{{ .Minor }}-amd64"
-      - "ghcr.io/apptrail-sh/controller:{{ .Version }}-amd64"
-      - "ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}-amd64"
+      - "docker.io/apptrail/agent:{{ .Version }}-amd64"
+      - "docker.io/apptrail/agent:{{ .Major }}.{{ .Minor }}-amd64"
+      - "ghcr.io/apptrail-sh/agent:{{ .Version }}-amd64"
+      - "ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}-amd64"
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title={{.ProjectName}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.description=AppTrail Controller"
+      - "--label=org.opencontainers.image.description=AppTrail Agent"
   - use: buildx
     goos: linux
     goarch: arm64
     image_templates:
-      - "docker.io/apptrail/controller:{{ .Version }}-arm64v8"
-      - "docker.io/apptrail/controller:{{ .Major }}.{{ .Minor }}-arm64v8"
-      - "ghcr.io/apptrail-sh/controller:{{ .Version }}-arm64v8"
-      - "ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}-arm64v8"
+      - "docker.io/apptrail/agent:{{ .Version }}-arm64v8"
+      - "docker.io/apptrail/agent:{{ .Major }}.{{ .Minor }}-arm64v8"
+      - "ghcr.io/apptrail-sh/agent:{{ .Version }}-arm64v8"
+      - "ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}-arm64v8"
     build_flag_templates:
       - "--platform=linux/arm64/v8"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title={{.ProjectName}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.description=AppTrail Controller"
+      - "--label=org.opencontainers.image.description=AppTrail Agent"
 
 docker_manifests:
-  - name_template: "docker.io/apptrail/controller:{{ .Version }}"
+  - name_template: "docker.io/apptrail/agent:{{ .Version }}"
     image_templates:
-      - docker.io/apptrail/{{ .ProjectName }}:{{ .Version }}-amd64
-      - docker.io/apptrail/{{ .ProjectName }}:{{ .Version }}-arm64v8
-  - name_template: "docker.io/apptrail/controller:{{ .Major }}.{{ .Minor }}"
+      - docker.io/apptrail/agent:{{ .Version }}-amd64
+      - docker.io/apptrail/agent:{{ .Version }}-arm64v8
+  - name_template: "docker.io/apptrail/agent:{{ .Major }}.{{ .Minor }}"
     image_templates:
-      - docker.io/apptrail/{{ .ProjectName }}:{{ .Major }}.{{ .Minor }}-amd64
-      - docker.io/apptrail/{{ .ProjectName }}:{{ .Major }}.{{ .Minor }}-arm64v8
-  - name_template: "ghcr.io/apptrail-sh/controller:{{ .Version }}"
+      - docker.io/apptrail/agent:{{ .Major }}.{{ .Minor }}-amd64
+      - docker.io/apptrail/agent:{{ .Major }}.{{ .Minor }}-arm64v8
+  - name_template: "ghcr.io/apptrail-sh/agent:{{ .Version }}"
     image_templates:
-      - ghcr.io/apptrail-sh/controller:{{ .Version }}-amd64
-      - ghcr.io/apptrail-sh/controller:{{ .Version }}-arm64v8
-  - name_template: "ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}"
+      - ghcr.io/apptrail-sh/agent:{{ .Version }}-amd64
+      - ghcr.io/apptrail-sh/agent:{{ .Version }}-arm64v8
+  - name_template: "ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}"
     image_templates:
-      - ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}-amd64
-      - ghcr.io/apptrail-sh/controller:{{ .Major }}.{{ .Minor }}-arm64v8
+      - ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}-amd64
+      - ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}-arm64v8
 
 release:
   extra_files:
