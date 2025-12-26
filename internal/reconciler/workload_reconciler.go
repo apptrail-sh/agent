@@ -193,26 +193,20 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 			Labels:          workload.GetLabels(),
 
 			// Workload status
-			DeploymentPhase:   currentPhase,
-			ReplicasTotal:     workload.GetTotalReplicas(),
-			ReplicasReady:     workload.GetReadyReplicas(),
-			ReplicasUpdated:   workload.GetUpdatedReplicas(),
-			ReplicasAvailable: workload.GetAvailableReplicas(),
+			DeploymentPhase: currentPhase,
 		}
 
 		if versionChanged {
 			log.Info("Workload version updated",
 				"kind", workload.GetKind(),
 				"workload", workload.GetName(),
-				"phase", currentPhase,
-				"replicas", fmt.Sprintf("%d/%d ready", workload.GetReadyReplicas(), workload.GetTotalReplicas()))
+				"phase", currentPhase)
 		} else {
 			log.Info("Workload phase updated",
 				"kind", workload.GetKind(),
 				"workload", workload.GetName(),
 				"previousPhase", lastPhase,
-				"currentPhase", currentPhase,
-				"replicas", fmt.Sprintf("%d/%d ready", workload.GetReadyReplicas(), workload.GetTotalReplicas()))
+				"currentPhase", currentPhase)
 		}
 	}
 
