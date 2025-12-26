@@ -6,21 +6,21 @@ import (
 	"time"
 
 	"github.com/apptrail-sh/agent/internal/model"
-	"github.com/google/uuid"
 	"resty.dev/v3"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // HTTPPublisher sends workload updates to the AppTrail Control Plane via HTTP
 type HTTPPublisher struct {
-	client      *resty.Client
-	endpoint    string
-	clusterID   string
-	environment string
+	client       *resty.Client
+	endpoint     string
+	clusterID    string
+	environment  string
+	agentVersion string
 }
 
 // NewHTTPPublisher creates a new HTTP publisher for the control plane
-func NewHTTPPublisher(endpoint, clusterID, environment string) *HTTPPublisher {
+func NewHTTPPublisher(endpoint, clusterID, environment, agentVersion string) *HTTPPublisher {
 	client := resty.New().
 		SetTimeout(10 * time.Second).
 		SetRetryCount(3).
@@ -28,76 +28,27 @@ func NewHTTPPublisher(endpoint, clusterID, environment string) *HTTPPublisher {
 		SetRetryMaxWaitTime(5 * time.Second)
 
 	return &HTTPPublisher{
-		client:      client,
-		endpoint:    endpoint,
-		clusterID:   clusterID,
-		environment: environment,
+		client:       client,
+		endpoint:     endpoint,
+		clusterID:    clusterID,
+		environment:  environment,
+		agentVersion: agentVersion,
 	}
-}
-
-// Event represents the event structure expected by the control plane
-type Event struct {
-	ID              string            `json:"id"`
-	Labels          map[string]string `json:"labels"`
-	ApplicationName string            `json:"applicationName"`
-	Namespace       string            `json:"namespace"`
-	EventType       string            `json:"eventType"`
-	WorkloadType    string            `json:"workloadType"`
-	PreviousVersion string            `json:"previousVersion"`
-	CurrentVersion  string            `json:"currentVersion"`
-
-	// Deployment phase tracking
-	DeploymentPhase string `json:"deploymentPhase,omitempty"`
-	StatusMessage   string `json:"statusMessage,omitempty"`
-	StatusReason    string `json:"statusReason,omitempty"`
 }
 
 // Publish sends a workload update to the control plane
 func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate) error {
 	logger := log.FromContext(ctx)
 
-	// Build event - control plane will determine actual event type using semver
-	// Merge Kubernetes labels with cluster metadata
-	labels := make(map[string]string)
-
-	// Copy all Kubernetes labels from the workload
-	if update.Labels != nil {
-		for k, v := range update.Labels {
-			labels[k] = v
-		}
-	}
-
-	// Add cluster metadata (overrides if conflicts)
-	labels["cluster_name"] = p.clusterID
-
-	// Add environment only if provided (optional for namespace-mapped environments)
-	if p.environment != "" {
-		labels["environment"] = p.environment
-	}
-
-	event := Event{
-		ID:              uuid.New().String(),
-		ApplicationName: update.Name,
-		Namespace:       update.Namespace,
-		EventType:       "deployment", // Generic type, control plane determines upgrade/rollback
-		WorkloadType:    update.Kind,
-		PreviousVersion: update.PreviousVersion,
-		CurrentVersion:  update.CurrentVersion,
-		Labels:          labels,
-
-		// Deployment phase tracking
-		DeploymentPhase: update.DeploymentPhase,
-		StatusMessage:   update.StatusMessage,
-		StatusReason:    update.StatusReason,
-	}
+	event := model.NewAgentEventPayload(update, p.clusterID, p.environment, p.agentVersion)
 
 	logger.Info("Publishing event to control plane",
 		"endpoint", p.endpoint,
-		"eventID", event.ID,
-		"namespace", update.Namespace,
-		"name", update.Name,
-		"currentVersion", update.CurrentVersion,
-		"previousVersion", update.PreviousVersion,
+		"eventID", event.EventID,
+		"namespace", event.Workload.Namespace,
+		"name", event.Workload.Name,
+		"currentVersion", event.Revision.Current,
+		"previousVersion", event.Revision.Previous,
 	)
 
 	// Send request with Resty
@@ -112,7 +63,7 @@ func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate
 	if err != nil {
 		logger.Error(err, "Failed to send event to control plane",
 			"endpoint", p.endpoint,
-			"eventID", event.ID,
+			"eventID", event.EventID,
 		)
 		return fmt.Errorf("failed to send event to control plane: %w", err)
 	}
@@ -125,17 +76,17 @@ func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate
 			"error", errorResponse,
 			"body", resp.String(),
 			"endpoint", p.endpoint,
-			"eventID", event.ID,
+			"eventID", event.EventID,
 		)
 		return fmt.Errorf("control plane returned error status %d: %s", resp.StatusCode(), resp.String())
 	}
 
 	logger.Info("Event successfully published to control plane",
 		"endpoint", p.endpoint,
-		"eventID", event.ID,
+		"eventID", event.EventID,
 		"statusCode", resp.StatusCode(),
-		"namespace", update.Namespace,
-		"name", update.Name,
+		"namespace", event.Workload.Namespace,
+		"name", event.Workload.Name,
 	)
 
 	return nil

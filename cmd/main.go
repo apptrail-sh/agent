@@ -22,6 +22,7 @@ import (
 	"flag"
 	"os"
 
+	"github.com/apptrail-sh/agent/internal/buildinfo"
 	"github.com/apptrail-sh/agent/internal/hooks"
 	"github.com/apptrail-sh/agent/internal/hooks/controlplane"
 	"github.com/apptrail-sh/agent/internal/hooks/pubsub"
@@ -84,7 +85,7 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&slackWebhookURL, "slack-webhook-url", "", "The URL to send slack notifications to")
 	flag.StringVar(&controlPlaneURL, "controlplane-url", "",
-		"The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/api/v1/events)")
+		"The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/ingest/v1/agent/events)")
 	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"),
 		"Unique identifier for this cluster (e.g., staging.stg01)")
 	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"),
@@ -179,12 +180,14 @@ func main() {
 	}
 
 	// Register Control Plane publisher if configured
+	agentVersion := buildinfo.AgentVersion()
+
 	if controlPlaneURL != "" {
 		if clusterID == "" {
 			setupLog.Error(nil, "cluster-id is required when controlplane-url is set")
 			os.Exit(1)
 		}
-		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, environment)
+		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, environment, agentVersion)
 		publishers = append(publishers, cpPublisher)
 		setupLog.Info("Control Plane publisher enabled",
 			"endpoint", controlPlaneURL,
@@ -199,7 +202,7 @@ func main() {
 			os.Exit(1)
 		}
 		ctx := context.Background()
-		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopic, clusterID, environment)
+		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopic, clusterID, environment, agentVersion)
 		if err != nil {
 			setupLog.Error(err, "unable to create Pub/Sub publisher",
 				"hint", "Ensure valid credentials via Workload Identity, GOOGLE_APPLICATION_CREDENTIALS, or gcloud auth")

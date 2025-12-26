@@ -5,21 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"cloud.google.com/go/pubsub/v2"
 	"github.com/apptrail-sh/agent/internal/model"
-	"github.com/google/uuid"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // PubSubPublisher sends workload updates to Google Cloud Pub/Sub
 type PubSubPublisher struct {
-	client      *pubsub.Client
-	publisher   *pubsub.Publisher
-	topicPath   string
-	clusterID   string
-	environment string
+	client       *pubsub.Client
+	publisher    *pubsub.Publisher
+	topicPath    string
+	clusterID    string
+	environment  string
+	agentVersion string
 }
 
 // ParseTopicPath parses a full Pub/Sub topic path and returns projectID and topicID.
@@ -43,7 +42,7 @@ func ParseTopicPath(topicPath string) (projectID, topicID string, err error) {
 //   - topicPath: Full Pub/Sub topic path (projects/<project>/topics/<topic>)
 //   - clusterID: Unique identifier for this cluster
 //   - environment: Optional environment name
-func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment string) (*PubSubPublisher, error) {
+func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment, agentVersion string) (*PubSubPublisher, error) {
 	projectID, topicID, err := ParseTopicPath(topicPath)
 	if err != nil {
 		return nil, err
@@ -61,106 +60,58 @@ func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment s
 	publisher.EnableMessageOrdering = true
 
 	return &PubSubPublisher{
-		client:      client,
-		publisher:   publisher,
-		topicPath:   topicPath,
-		clusterID:   clusterID,
-		environment: environment,
+		client:       client,
+		publisher:    publisher,
+		topicPath:    topicPath,
+		clusterID:    clusterID,
+		environment:  environment,
+		agentVersion: agentVersion,
 	}, nil
-}
-
-// Event represents the event structure for Pub/Sub messages
-type Event struct {
-	ID              string            `json:"id"`
-	Timestamp       string            `json:"timestamp"`
-	Labels          map[string]string `json:"labels"`
-	ApplicationName string            `json:"applicationName"`
-	Namespace       string            `json:"namespace"`
-	EventType       string            `json:"eventType"`
-	WorkloadType    string            `json:"workloadType"`
-	PreviousVersion string            `json:"previousVersion"`
-	CurrentVersion  string            `json:"currentVersion"`
-
-	// Deployment phase tracking
-	DeploymentPhase string `json:"deploymentPhase,omitempty"`
-	StatusMessage   string `json:"statusMessage,omitempty"`
-	StatusReason    string `json:"statusReason,omitempty"`
 }
 
 // Publish sends a workload update to Google Cloud Pub/Sub
 func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpdate) error {
 	logger := log.FromContext(ctx)
 
-	// Build labels - merge Kubernetes labels with cluster metadata
-	labels := make(map[string]string)
-
-	// Copy all Kubernetes labels from the workload
-	if update.Labels != nil {
-		for k, v := range update.Labels {
-			labels[k] = v
-		}
-	}
-
-	labels["cluster_name"] = p.clusterID
-
-	if p.environment != "" {
-		labels["environment"] = p.environment
-	}
-
-	event := Event{
-		ID:              uuid.New().String(),
-		Timestamp:       time.Now().UTC().Format(time.RFC3339),
-		ApplicationName: update.Name,
-		Namespace:       update.Namespace,
-		EventType:       "deployment",
-		WorkloadType:    update.Kind,
-		PreviousVersion: update.PreviousVersion,
-		CurrentVersion:  update.CurrentVersion,
-		Labels:          labels,
-
-		// Deployment phase tracking
-		DeploymentPhase: update.DeploymentPhase,
-		StatusMessage:   update.StatusMessage,
-		StatusReason:    update.StatusReason,
-	}
+	event := model.NewAgentEventPayload(update, p.clusterID, p.environment, p.agentVersion)
 
 	data, err := json.Marshal(event)
 	if err != nil {
 		logger.Error(err, "Failed to marshal event",
-			"eventID", event.ID,
-			"namespace", update.Namespace,
-			"name", update.Name,
+			"eventID", event.EventID,
+			"namespace", event.Workload.Namespace,
+			"name", event.Workload.Name,
 		)
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
 	// Ordering key ensures events for the same workload are delivered in order.
 	// Format: cluster/namespace/workload_name
-	orderingKey := fmt.Sprintf("%s/%s/%s", p.clusterID, update.Namespace, update.Name)
+	orderingKey := fmt.Sprintf("%s/%s/%s", p.clusterID, event.Workload.Namespace, event.Workload.Name)
 
 	logger.Info("Publishing event to Google Pub/Sub",
 		"topic", p.topicPath,
-		"eventID", event.ID,
+		"eventID", event.EventID,
 		"orderingKey", orderingKey,
-		"namespace", update.Namespace,
-		"name", update.Name,
-		"currentVersion", update.CurrentVersion,
-		"previousVersion", update.PreviousVersion,
-		"deploymentPhase", update.DeploymentPhase,
+		"namespace", event.Workload.Namespace,
+		"name", event.Workload.Name,
+		"currentVersion", event.Revision.Current,
+		"previousVersion", event.Revision.Previous,
+		"deploymentPhase", event.Phase,
 	)
 
 	attributes := map[string]string{
 		"cluster_name":  p.clusterID,
-		"namespace":     update.Namespace,
-		"workload_name": update.Name,
-		"workload_type": update.Kind,
-		"event_type":    "deployment",
+		"namespace":     event.Workload.Namespace,
+		"workload_name": event.Workload.Name,
+		"workload_type": string(event.Workload.Kind),
+		"event_type":    string(event.Kind),
 	}
 	if p.environment != "" {
 		attributes["environment"] = p.environment
 	}
-	if update.DeploymentPhase != "" {
-		attributes["deployment_phase"] = update.DeploymentPhase
+	if event.Phase != nil {
+		attributes["deployment_phase"] = string(*event.Phase)
 	}
 
 	result := p.publisher.Publish(ctx, &pubsub.Message{
@@ -173,17 +124,17 @@ func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpda
 	if err != nil {
 		logger.Error(err, "Failed to publish event to Pub/Sub",
 			"topic", p.topicPath,
-			"eventID", event.ID,
+			"eventID", event.EventID,
 		)
 		return fmt.Errorf("failed to publish event to pubsub: %w", err)
 	}
 
 	logger.Info("Event successfully published to Google Pub/Sub",
 		"topic", p.topicPath,
-		"eventID", event.ID,
+		"eventID", event.EventID,
 		"messageID", msgID,
-		"namespace", update.Namespace,
-		"name", update.Name,
+		"namespace", event.Workload.Namespace,
+		"name", event.Workload.Name,
 	)
 
 	return nil
