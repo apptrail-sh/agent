@@ -11,7 +11,7 @@ require (
 	k8s.io/api v0.34.3
 	k8s.io/apimachinery v0.34.3
 	k8s.io/client-go v0.34.3
-	resty.dev/v3 v3.0.0-beta.5
+	resty.dev/v3 v3.0.0-beta.6
 	sigs.k8s.io/controller-runtime v0.22.4
 )
 
