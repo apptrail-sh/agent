@@ -15,12 +15,11 @@ type HTTPPublisher struct {
 	client       *resty.Client
 	endpoint     string
 	clusterID    string
-	environment  string
 	agentVersion string
 }
 
 // NewHTTPPublisher creates a new HTTP publisher for the control plane
-func NewHTTPPublisher(endpoint, clusterID, environment, agentVersion string) *HTTPPublisher {
+func NewHTTPPublisher(endpoint, clusterID, agentVersion string) *HTTPPublisher {
 	client := resty.New().
 		SetTimeout(10 * time.Second).
 		SetRetryCount(3).
@@ -31,7 +30,6 @@ func NewHTTPPublisher(endpoint, clusterID, environment, agentVersion string) *HT
 		client:       client,
 		endpoint:     endpoint,
 		clusterID:    clusterID,
-		environment:  environment,
 		agentVersion: agentVersion,
 	}
 }
@@ -40,7 +38,7 @@ func NewHTTPPublisher(endpoint, clusterID, environment, agentVersion string) *HT
 func (p *HTTPPublisher) Publish(ctx context.Context, update model.WorkloadUpdate) error {
 	logger := log.FromContext(ctx)
 
-	event := model.NewAgentEventPayload(update, p.clusterID, p.environment, p.agentVersion)
+	event := model.NewAgentEventPayload(update, p.clusterID, p.agentVersion)
 
 	logger.Info("Publishing event to control plane",
 		"endpoint", p.endpoint,

@@ -71,7 +71,6 @@ func main() {
 	var slackWebhookURL string
 	var controlPlaneURL string
 	var clusterID string
-	var environment string
 	var pubsubTopic string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -88,8 +87,6 @@ func main() {
 		"The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/ingest/v1/agent/events)")
 	flag.StringVar(&clusterID, "cluster-id", os.Getenv("CLUSTER_ID"),
 		"Unique identifier for this cluster (e.g., staging.stg01)")
-	flag.StringVar(&environment, "environment", os.Getenv("ENVIRONMENT"),
-		"Environment for events without namespace mapping (optional)")
 	flag.StringVar(&pubsubTopic, "pubsub-topic", os.Getenv("PUBSUB_TOPIC"),
 		"Google Cloud Pub/Sub topic path (projects/<project>/topics/<topic>)")
 
@@ -187,12 +184,11 @@ func main() {
 			setupLog.Error(nil, "cluster-id is required when controlplane-url is set")
 			os.Exit(1)
 		}
-		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, environment, agentVersion)
+		cpPublisher := controlplane.NewHTTPPublisher(controlPlaneURL, clusterID, agentVersion)
 		publishers = append(publishers, cpPublisher)
 		setupLog.Info("Control Plane publisher enabled",
 			"endpoint", controlPlaneURL,
-			"clusterID", clusterID,
-			"environment", environment)
+			"clusterID", clusterID)
 	}
 
 	// Register Google Pub/Sub publisher if configured
@@ -202,7 +198,7 @@ func main() {
 			os.Exit(1)
 		}
 		ctx := context.Background()
-		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopic, clusterID, environment, agentVersion)
+		pubsubPublisher, err := pubsub.NewPubSubPublisher(ctx, pubsubTopic, clusterID, agentVersion)
 		if err != nil {
 			setupLog.Error(err, "unable to create Pub/Sub publisher",
 				"hint", "Ensure valid credentials via Workload Identity, GOOGLE_APPLICATION_CREDENTIALS, or gcloud auth")
@@ -211,8 +207,7 @@ func main() {
 		publishers = append(publishers, pubsubPublisher)
 		setupLog.Info("Google Pub/Sub publisher enabled",
 			"topic", pubsubTopic,
-			"clusterID", clusterID,
-			"environment", environment)
+			"clusterID", clusterID)
 	}
 
 	if len(publishers) == 0 {

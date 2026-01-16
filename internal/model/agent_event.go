@@ -53,20 +53,19 @@ type ErrorDetail struct {
 }
 
 type AgentEventPayload struct {
-	EventID     string             `json:"eventId"`
-	OccurredAt  time.Time          `json:"occurredAt"`
-	Environment string             `json:"environment"`
-	Source      SourceMetadata     `json:"source"`
-	Workload    WorkloadRef        `json:"workload"`
-	Labels      map[string]string  `json:"labels"`
-	Kind        AgentEventKind     `json:"kind"`
-	Outcome     *AgentEventOutcome `json:"outcome,omitempty"`
-	Revision    *Revision          `json:"revision,omitempty"`
-	Phase       *DeploymentPhase   `json:"phase,omitempty"`
-	Error       *ErrorDetail       `json:"error,omitempty"`
+	EventID    string             `json:"eventId"`
+	OccurredAt time.Time          `json:"occurredAt"`
+	Source     SourceMetadata     `json:"source"`
+	Workload   WorkloadRef        `json:"workload"`
+	Labels     map[string]string  `json:"labels"`
+	Kind       AgentEventKind     `json:"kind"`
+	Outcome    *AgentEventOutcome `json:"outcome,omitempty"`
+	Revision   *Revision          `json:"revision,omitempty"`
+	Phase      *DeploymentPhase   `json:"phase,omitempty"`
+	Error      *ErrorDetail       `json:"error,omitempty"`
 }
 
-func NewAgentEventPayload(update WorkloadUpdate, clusterID, environment, agentVersion string) AgentEventPayload {
+func NewAgentEventPayload(update WorkloadUpdate, clusterID, agentVersion string) AgentEventPayload {
 	labels := make(map[string]string)
 	if update.Labels != nil {
 		for key, value := range update.Labels {
@@ -96,9 +95,8 @@ func NewAgentEventPayload(update WorkloadUpdate, clusterID, environment, agentVe
 	}
 
 	return AgentEventPayload{
-		EventID:     uuid.New().String(),
-		OccurredAt:  time.Now().UTC(),
-		Environment: environment,
+		EventID:    uuid.New().String(),
+		OccurredAt: time.Now().UTC(),
 		Source: SourceMetadata{
 			ClusterID:    clusterID,
 			AgentVersion: agentVersion,

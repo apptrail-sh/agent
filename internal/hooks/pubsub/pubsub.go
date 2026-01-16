@@ -17,7 +17,6 @@ type PubSubPublisher struct {
 	publisher    *pubsub.Publisher
 	topicPath    string
 	clusterID    string
-	environment  string
 	agentVersion string
 }
 
@@ -41,8 +40,8 @@ func ParseTopicPath(topicPath string) (projectID, topicID string, err error) {
 // Parameters:
 //   - topicPath: Full Pub/Sub topic path (projects/<project>/topics/<topic>)
 //   - clusterID: Unique identifier for this cluster
-//   - environment: Optional environment name
-func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment, agentVersion string) (*PubSubPublisher, error) {
+//   - agentVersion: Version of the agent
+func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, agentVersion string) (*PubSubPublisher, error) {
 	projectID, topicID, err := ParseTopicPath(topicPath)
 	if err != nil {
 		return nil, err
@@ -64,7 +63,6 @@ func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment, 
 		publisher:    publisher,
 		topicPath:    topicPath,
 		clusterID:    clusterID,
-		environment:  environment,
 		agentVersion: agentVersion,
 	}, nil
 }
@@ -73,7 +71,7 @@ func NewPubSubPublisher(ctx context.Context, topicPath, clusterID, environment, 
 func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpdate) error {
 	logger := log.FromContext(ctx)
 
-	event := model.NewAgentEventPayload(update, p.clusterID, p.environment, p.agentVersion)
+	event := model.NewAgentEventPayload(update, p.clusterID, p.agentVersion)
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -106,9 +104,6 @@ func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpda
 		"workload_name": event.Workload.Name,
 		"workload_type": string(event.Workload.Kind),
 		"event_type":    string(event.Kind),
-	}
-	if p.environment != "" {
-		attributes["environment"] = p.environment
 	}
 	if event.Phase != nil {
 		attributes["deployment_phase"] = string(*event.Phase)
