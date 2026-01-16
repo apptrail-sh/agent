@@ -1,6 +1,6 @@
 module github.com/apptrail-sh/agent
 
-go 1.25.6
+go 1.24.6
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.3.0
