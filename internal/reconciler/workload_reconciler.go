@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	apptrailv1alpha1 "github.com/apptrail-sh/agent/api/v1alpha1"
@@ -256,7 +257,7 @@ func (wr *WorkloadReconciler) determineWorkloadPhase(workload WorkloadAdapter, a
 func (wr *WorkloadReconciler) loadRolloutStateFromCRD(ctx context.Context, namespace, name, kind string) (time.Time, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, kind)
+	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, strings.ToLower(kind))
 	state := &apptrailv1alpha1.WorkloadRolloutState{}
 
 	err := wr.Get(ctx, types.NamespacedName{
@@ -279,7 +280,7 @@ func (wr *WorkloadReconciler) loadRolloutStateFromCRD(ctx context.Context, names
 func (wr *WorkloadReconciler) saveRolloutStateToCRD(ctx context.Context, namespace, name, kind, version string, rolloutStarted time.Time) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, kind)
+	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, strings.ToLower(kind))
 	state := &apptrailv1alpha1.WorkloadRolloutState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stateName,
@@ -327,7 +328,7 @@ func (wr *WorkloadReconciler) saveRolloutStateToCRD(ctx context.Context, namespa
 func (wr *WorkloadReconciler) deleteRolloutStateFromCRD(ctx context.Context, namespace, name, kind string) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, kind)
+	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, strings.ToLower(kind))
 	state := &apptrailv1alpha1.WorkloadRolloutState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stateName,
