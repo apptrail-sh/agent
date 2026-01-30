@@ -1,26 +1,14 @@
 package reconciler
 
 import (
+	"github.com/apptrail-sh/agent/internal/model"
 	v1 "k8s.io/api/apps/v1"
 )
 
 // WorkloadAdapter abstracts the common operations across Deployments, StatefulSets, and DaemonSets
+// It implements WorkloadResourceAdapter interface
 type WorkloadAdapter interface {
-	GetName() string
-	GetNamespace() string
-	GetKind() string
-	GetLabels() map[string]string
-	GetVersion() string // Gets app.kubernetes.io/version label
-
-	// Replica status
-	GetTotalReplicas() int32
-	GetReadyReplicas() int32
-	GetUpdatedReplicas() int32
-	GetAvailableReplicas() int32
-
-	// Phase determination
-	IsRollingOut() bool
-	HasFailed() bool
+	WorkloadResourceAdapter
 }
 
 // DeploymentAdapter wraps a Deployment to implement WorkloadAdapter
@@ -84,6 +72,14 @@ func (d *DeploymentAdapter) HasFailed() bool {
 	return false
 }
 
+func (d *DeploymentAdapter) GetUID() string {
+	return string(d.Deployment.UID)
+}
+
+func (d *DeploymentAdapter) GetResourceType() model.ResourceType {
+	return model.ResourceTypeWorkload
+}
+
 // StatefulSetAdapter wraps a StatefulSet to implement WorkloadAdapter
 type StatefulSetAdapter struct {
 	StatefulSet *v1.StatefulSet
@@ -142,6 +138,14 @@ func (s *StatefulSetAdapter) HasFailed() bool {
 	return false
 }
 
+func (s *StatefulSetAdapter) GetUID() string {
+	return string(s.StatefulSet.UID)
+}
+
+func (s *StatefulSetAdapter) GetResourceType() model.ResourceType {
+	return model.ResourceTypeWorkload
+}
+
 // DaemonSetAdapter wraps a DaemonSet to implement WorkloadAdapter
 type DaemonSetAdapter struct {
 	DaemonSet *v1.DaemonSet
@@ -194,4 +198,12 @@ func (d *DaemonSetAdapter) HasFailed() bool {
 	// DaemonSets don't have explicit failure conditions
 	// We rely on timeout-based failure detection
 	return false
+}
+
+func (d *DaemonSetAdapter) GetUID() string {
+	return string(d.DaemonSet.UID)
+}
+
+func (d *DaemonSetAdapter) GetResourceType() model.ResourceType {
+	return model.ResourceTypeWorkload
 }

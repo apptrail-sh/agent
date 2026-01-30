@@ -135,6 +135,91 @@ func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpda
 	return nil
 }
 
+// PublishBatch sends a batch of resource events to Google Cloud Pub/Sub
+// Implements hooks.ResourceEventPublisher interface
+func (p *PubSubPublisher) PublishBatch(ctx context.Context, events []model.ResourceEventPayload) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	logger.Info("Publishing resource event batch to Google Pub/Sub",
+		"topic", p.topicPath,
+		"eventCount", len(events),
+	)
+
+	var publishResults []*pubsub.PublishResult
+	for _, event := range events {
+		data, err := json.Marshal(event)
+		if err != nil {
+			logger.Error(err, "Failed to marshal resource event",
+				"eventID", event.EventID,
+				"resourceType", event.ResourceType,
+				"name", event.Resource.Name,
+			)
+			continue
+		}
+
+		// Ordering key ensures events for the same resource are delivered in order.
+		// Format: cluster/resource_type/namespace/name (namespace empty for cluster-scoped)
+		var orderingKey string
+		if event.Resource.Namespace != "" {
+			orderingKey = fmt.Sprintf("%s/%s/%s/%s",
+				p.clusterID, event.ResourceType, event.Resource.Namespace, event.Resource.Name)
+		} else {
+			orderingKey = fmt.Sprintf("%s/%s/%s",
+				p.clusterID, event.ResourceType, event.Resource.Name)
+		}
+
+		attributes := map[string]string{
+			"cluster_id":    p.clusterID,
+			"resource_type": string(event.ResourceType),
+			"event_kind":    string(event.EventKind),
+			"resource_name": event.Resource.Name,
+			"message_type":  "resource_event", // Distinguish from workload events
+		}
+		if event.Resource.Namespace != "" {
+			attributes["namespace"] = event.Resource.Namespace
+		}
+
+		result := p.publisher.Publish(ctx, &pubsub.Message{
+			Data:        data,
+			Attributes:  attributes,
+			OrderingKey: orderingKey,
+		})
+		publishResults = append(publishResults, result)
+	}
+
+	// Wait for all publishes to complete
+	var errors []error
+	for i, result := range publishResults {
+		msgID, err := result.Get(ctx)
+		if err != nil {
+			logger.Error(err, "Failed to publish resource event to Pub/Sub",
+				"eventID", events[i].EventID,
+			)
+			errors = append(errors, err)
+		} else {
+			logger.V(1).Info("Resource event published",
+				"messageID", msgID,
+				"eventID", events[i].EventID,
+			)
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to publish %d/%d events", len(errors), len(events))
+	}
+
+	logger.Info("Resource event batch successfully published to Google Pub/Sub",
+		"topic", p.topicPath,
+		"eventCount", len(events),
+	)
+
+	return nil
+}
+
 // Stop stops the publisher and closes the client
 func (p *PubSubPublisher) Stop() {
 	if p.publisher != nil {

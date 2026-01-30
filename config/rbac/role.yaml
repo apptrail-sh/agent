@@ -5,6 +5,22 @@ metadata:
   name: apptrail-agent-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - nodes
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/status
+  - pods/status
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - daemonsets
