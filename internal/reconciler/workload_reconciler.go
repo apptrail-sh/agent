@@ -98,17 +98,26 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	// Load persistent state from CRD if in-memory state is empty
+	// Load persistent state from CRD if in-memory state is empty (e.g., after restart)
+	var crdState RolloutState
 	if stored.RolloutStarted.IsZero() {
-		crdRolloutStarted, err := wr.loadRolloutStateFromCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind())
+		var err error
+		crdState, err = wr.loadFullRolloutStateFromCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind())
 		if err != nil {
 			log.Error(err, "Failed to load rollout state from CRD")
 			// Continue with in-memory state
-		} else if !crdRolloutStarted.IsZero() {
-			stored.RolloutStarted = crdRolloutStarted
-			// Update in-memory map so determineWorkloadPhase can access it
-			wr.workloadVersions[appkey] = stored
-			log.Info("Loaded rollout state from CRD", "rolloutStarted", crdRolloutStarted)
+		} else {
+			if !crdState.RolloutStarted.IsZero() {
+				stored.RolloutStarted = crdState.RolloutStarted
+				// Update in-memory map so determineWorkloadPhase can access it
+				wr.workloadVersions[appkey] = stored
+				log.Info("Loaded rollout state from CRD", "rolloutStarted", crdState.RolloutStarted)
+			}
+			// Also restore phase tracking from CRD if we have it
+			if crdState.LastSentPhase != "" && wr.workloadPhases[appkey] == "" {
+				wr.workloadPhases[appkey] = crdState.LastSentPhase
+				log.Info("Restored phase tracking from CRD", "lastSentPhase", crdState.LastSentPhase)
+			}
 		}
 	}
 
@@ -120,6 +129,38 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 	versionChanged := stored.CurrentVersion != versionLabel
 	phaseChanged := lastPhase != currentPhase
 
+	// Check for restart deduplication: if we have CRD state, verify this is a real change
+	// not just a re-reconciliation of the same state after restart
+	if crdState.LastSentVersion != "" {
+		// We loaded state from CRD, check if current state matches what we last sent
+		if crdState.LastSentVersion == versionLabel && crdState.LastSentPhase == currentPhase {
+			log.Info("Skipping duplicate event after restart",
+				"workload", appkey,
+				"version", versionLabel,
+				"phase", currentPhase)
+
+			// Refresh metrics from current state (decoupled from event publishing)
+			previousVersion := stored.PreviousVersion
+			if previousVersion == "" {
+				previousVersion = crdState.LastSentVersion
+			}
+			wr.refreshWorkloadMetrics(workload, previousVersion, versionLabel)
+
+			// Update in-memory state to match CRD (so subsequent changes will be detected)
+			if stored.CurrentVersion != versionLabel {
+				stored.CurrentVersion = versionLabel
+				stored.PreviousVersion = crdState.LastSentVersion
+				wr.workloadVersions[appkey] = stored
+			}
+			wr.workloadPhases[appkey] = currentPhase
+
+			if currentPhase == phaseRollingOut {
+				return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
+			}
+			return ctrl.Result{}, nil
+		}
+	}
+
 	// Track rollout timing
 	// Set RolloutStarted when entering rolling_out phase (or on version change)
 	// Clear it when leaving rolling_out phase
@@ -130,10 +171,10 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 		needsPersistence = true
 		log.Info("Rollout started", "workload", appkey, "time", stored.RolloutStarted)
 	} else if currentPhase != phaseRollingOut && !stored.RolloutStarted.IsZero() {
-		// Left rolling_out phase, clear the timer and delete CRD
+		// Left rolling_out phase, clear the in-memory timer
+		// Keep CRD for dedup and metrics refresh on restart
 		stored.RolloutStarted = time.Time{}
-		log.Info("Rollout completed, cleaning up state", "workload", appkey)
-		_ = wr.deleteRolloutStateFromCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind())
+		log.Info("Rollout completed", "workload", appkey)
 	}
 
 	if versionChanged || phaseChanged {
@@ -148,25 +189,8 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 			wr.workloadVersions[appkey] = newAppVer
 			stored = newAppVer // Update local reference
 
-			timeFormatted := newAppVer.LastUpdated.Format(time.RFC3339)
-
-			labelsToDelete := make(map[string]string)
-			labelsToDelete["namespace"] = workload.GetNamespace()
-			labelsToDelete["workload"] = workload.GetName()
-			labelsToDelete["kind"] = workload.GetKind()
-
-			deleted := appVersionGauge.DeletePartialMatch(labelsToDelete)
-			if deleted > 0 {
-				log.Info("Deleted old workload version metric", "workload", workload.GetName(), "kind", workload.GetKind())
-			}
-
-			appVersionGauge.WithLabelValues(
-				workload.GetNamespace(),
-				workload.GetName(),
-				workload.GetKind(),
-				stored.CurrentVersion,
-				versionLabel,
-				timeFormatted).Set(1)
+			wr.refreshWorkloadMetrics(workload, stored.PreviousVersion, versionLabel)
+			log.Info("Updated workload version metric", "workload", workload.GetName(), "kind", workload.GetKind())
 		} else {
 			// Version didn't change but we might have updated RolloutStarted
 			wr.workloadVersions[appkey] = stored
@@ -175,13 +199,12 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 		// Update phase tracking
 		wr.workloadPhases[appkey] = currentPhase
 
-		// Persist rollout state to CRD if needed
-		if needsPersistence && !stored.RolloutStarted.IsZero() {
-			err := wr.saveRolloutStateToCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind(), versionLabel, stored.RolloutStarted)
-			if err != nil {
-				log.Error(err, "Failed to persist rollout state to CRD")
-				// Don't fail the reconciliation, continue with in-memory state
-			}
+		// Persist state to CRD for deduplication after restart
+		// Always persist when we send an event, not just when rollout starts
+		err := wr.saveFullRolloutStateToCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind(), versionLabel, stored.RolloutStarted, versionLabel, currentPhase)
+		if err != nil {
+			log.Error(err, "Failed to persist rollout state to CRD")
+			// Don't fail the reconciliation, continue with in-memory state
 		}
 
 		// Send event with current state
@@ -189,7 +212,7 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 			Name:            workload.GetName(),
 			Namespace:       workload.GetNamespace(),
 			Kind:            workload.GetKind(),
-			PreviousVersion: stored.CurrentVersion,
+			PreviousVersion: stored.PreviousVersion,
 			CurrentVersion:  versionLabel,
 			Labels:          workload.GetLabels(),
 
@@ -209,6 +232,12 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 				"previousPhase", lastPhase,
 				"currentPhase", currentPhase)
 		}
+	} else if needsPersistence {
+		// Even if no event to send, persist rollout start time if needed
+		err := wr.saveFullRolloutStateToCRD(ctx, workload.GetNamespace(), workload.GetName(), workload.GetKind(), versionLabel, stored.RolloutStarted, versionLabel, currentPhase)
+		if err != nil {
+			log.Error(err, "Failed to persist rollout state to CRD")
+		}
 	}
 
 	// If workload is rolling out, requeue to check timeout periodically
@@ -217,6 +246,26 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// refreshWorkloadMetrics updates the Prometheus gauge for a workload.
+// Called to ensure metrics reflect current state regardless of event publishing.
+func (wr *WorkloadReconciler) refreshWorkloadMetrics(workload WorkloadAdapter, previousVersion, currentVersion string) {
+	labelsToDelete := map[string]string{
+		"namespace": workload.GetNamespace(),
+		"workload":  workload.GetName(),
+		"kind":      workload.GetKind(),
+	}
+	appVersionGauge.DeletePartialMatch(labelsToDelete)
+
+	appVersionGauge.WithLabelValues(
+		workload.GetNamespace(),
+		workload.GetName(),
+		workload.GetKind(),
+		previousVersion,
+		currentVersion,
+		time.Now().Format(time.RFC3339),
+	).Set(1)
 }
 
 // determineWorkloadPhase determines the workload phase based on Kubernetes status
@@ -253,8 +302,16 @@ func (wr *WorkloadReconciler) determineWorkloadPhase(workload WorkloadAdapter, a
 	return phaseProgressing
 }
 
-// loadRolloutStateFromCRD loads the rollout state from the CRD if it exists
-func (wr *WorkloadReconciler) loadRolloutStateFromCRD(ctx context.Context, namespace, name, kind string) (time.Time, error) {
+// RolloutState contains the state loaded from the CRD
+type RolloutState struct {
+	RolloutStarted  time.Time
+	LastSentVersion string
+	LastSentPhase   string
+	LastSentAt      time.Time
+}
+
+// loadFullRolloutStateFromCRD loads the complete rollout state from the CRD including deduplication fields
+func (wr *WorkloadReconciler) loadFullRolloutStateFromCRD(ctx context.Context, namespace, name, kind string) (RolloutState, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, strings.ToLower(kind))
@@ -267,20 +324,30 @@ func (wr *WorkloadReconciler) loadRolloutStateFromCRD(ctx context.Context, names
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return time.Time{}, nil // No state stored yet
+			return RolloutState{}, nil // No state stored yet
 		}
 		log.Error(err, "Failed to load rollout state", "stateName", stateName)
-		return time.Time{}, err
+		return RolloutState{}, err
 	}
 
-	return state.Spec.RolloutStarted.Time, nil
+	result := RolloutState{
+		RolloutStarted:  state.Spec.RolloutStarted.Time,
+		LastSentVersion: state.Spec.LastSentVersion,
+		LastSentPhase:   state.Spec.LastSentPhase,
+	}
+	if state.Spec.LastSentAt != nil {
+		result.LastSentAt = state.Spec.LastSentAt.Time
+	}
+
+	return result, nil
 }
 
-// saveRolloutStateToCRD saves the rollout state to a CRD
-func (wr *WorkloadReconciler) saveRolloutStateToCRD(ctx context.Context, namespace, name, kind, version string, rolloutStarted time.Time) error {
+// saveFullRolloutStateToCRD saves the complete rollout state to a CRD including deduplication fields
+func (wr *WorkloadReconciler) saveFullRolloutStateToCRD(ctx context.Context, namespace, name, kind, version string, rolloutStarted time.Time, lastSentVersion, lastSentPhase string) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	stateName := fmt.Sprintf("%s-%s-%s", namespace, name, strings.ToLower(kind))
+	now := metav1.Now()
 	state := &apptrailv1alpha1.WorkloadRolloutState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      stateName,
@@ -292,6 +359,9 @@ func (wr *WorkloadReconciler) saveRolloutStateToCRD(ctx context.Context, namespa
 			WorkloadKind:      kind,
 			Version:           version,
 			RolloutStarted:    metav1.Time{Time: rolloutStarted},
+			LastSentVersion:   lastSentVersion,
+			LastSentPhase:     lastSentPhase,
+			LastSentAt:        &now,
 		},
 	}
 

@@ -41,6 +41,20 @@ spec:
           spec:
             description: spec defines the desired state of WorkloadRolloutState
             properties:
+              lastSentAt:
+                description: LastSentAt is the timestamp when the last event was sent
+                format: date-time
+                type: string
+              lastSentPhase:
+                description: |-
+                  LastSentPhase is the deployment phase that was last sent to the control plane
+                  Used for deduplication after agent restarts
+                type: string
+              lastSentVersion:
+                description: |-
+                  LastSentVersion is the version that was last sent to the control plane
+                  Used for deduplication after agent restarts
+                type: string
               rolloutStarted:
                 description: RolloutStarted is the timestamp when the rollout started
                 format: date-time

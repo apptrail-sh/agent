@@ -2,13 +2,17 @@ package reconciler
 
 import (
 	"context"
+	"time"
 
 	v1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/apptrail-sh/agent/internal/model"
 )
@@ -54,5 +58,13 @@ func (sr *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (sr *StatefulSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.StatefulSet{}).
+		WithEventFilter(StatefulSetStatusChangedPredicate()).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: 5,
+			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](
+				200*time.Millisecond,
+				10*time.Minute,
+			),
+		}).
 		Complete(sr)
 }

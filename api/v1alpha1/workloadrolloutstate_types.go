@@ -41,6 +41,20 @@ type WorkloadRolloutStateSpec struct {
 	// Version is the version being rolled out (app.kubernetes.io/version label)
 	// +optional
 	Version string `json:"version,omitempty"`
+
+	// LastSentVersion is the version that was last sent to the control plane
+	// Used for deduplication after agent restarts
+	// +optional
+	LastSentVersion string `json:"lastSentVersion,omitempty"`
+
+	// LastSentPhase is the deployment phase that was last sent to the control plane
+	// Used for deduplication after agent restarts
+	// +optional
+	LastSentPhase string `json:"lastSentPhase,omitempty"`
+
+	// LastSentAt is the timestamp when the last event was sent
+	// +optional
+	LastSentAt *metav1.Time `json:"lastSentAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
