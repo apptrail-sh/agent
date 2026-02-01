@@ -22,6 +22,10 @@ linters:
     - unparam
     - unused
   settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*net/http.Response.Body).Close
     revive:
       rules:
         - name: comment-spacings

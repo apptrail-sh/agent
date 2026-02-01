@@ -19,11 +19,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"os"
 	"strings"
 
 	"github.com/apptrail-sh/agent/internal/buildinfo"
+	"github.com/apptrail-sh/agent/internal/cluster"
 	"github.com/apptrail-sh/agent/internal/filter"
 	"github.com/apptrail-sh/agent/internal/hooks"
 	"github.com/apptrail-sh/agent/internal/hooks/controlplane"
@@ -89,6 +91,9 @@ func main() {
 
 	mgr := setupManager(cfg)
 	agentVersion := buildinfo.AgentVersion()
+
+	// Resolve cluster ID (explicit flag takes priority, then auto-detection)
+	cfg.clusterID = resolveClusterID(cfg.clusterID)
 
 	// Setup channels for event publishing
 	publisherChan := make(chan model.WorkloadUpdate, 100)
@@ -381,6 +386,46 @@ func setupHealthChecks(mgr ctrl.Manager) {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+}
+
+// resolveClusterID resolves the cluster ID using the following priority:
+// 1. Explicit flag/env (highest priority)
+// 2. Auto-detection from GCP metadata service
+func resolveClusterID(explicitID string) string {
+	// If explicitly provided, use it
+	if explicitID != "" {
+		setupLog.Info("Using explicit cluster ID", "clusterID", explicitID)
+		return explicitID
+	}
+
+	// Attempt auto-detection
+	setupLog.Info("No explicit cluster ID provided, attempting auto-detection")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*cluster.DefaultConfig().Timeout)
+	defer cancel()
+
+	resolver := cluster.NewResolver(cluster.DefaultConfig())
+
+	info, err := resolver.Resolve(ctx)
+	if err != nil {
+		if errors.Is(err, cluster.ErrNoProviderDetected) {
+			setupLog.Info("No cloud provider detected for auto-detection",
+				"hint", "Use --cluster-id flag or CLUSTER_ID env var to set cluster ID manually")
+		} else {
+			setupLog.Error(err, "Failed to auto-detect cluster ID",
+				"hint", "Use --cluster-id flag or CLUSTER_ID env var to set cluster ID manually")
+		}
+		return ""
+	}
+
+	setupLog.Info("Auto-detected cluster ID",
+		"clusterID", info.ClusterID,
+		"provider", info.Provider,
+		"region", info.Region,
+		"clusterName", info.ClusterName,
+	)
+
+	return info.ClusterID
 }
 
 // splitAndTrim splits a comma-separated string and trims whitespace from each element
