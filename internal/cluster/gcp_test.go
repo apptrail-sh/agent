@@ -86,7 +86,7 @@ func TestGCPProvider_Resolve_Success(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	expectedClusterID := "gcp/my-gcp-project/us-central1/my-gke-cluster"
+	expectedClusterID := "my-gke-cluster"
 	if info.ClusterID != expectedClusterID {
 		t.Errorf("Expected cluster ID %q, got %q", expectedClusterID, info.ClusterID)
 	}

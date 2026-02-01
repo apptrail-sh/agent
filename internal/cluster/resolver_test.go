@@ -48,7 +48,7 @@ func TestResolver_Resolve_GCP(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	expectedID := "gcp/test-project/us-central1/test-cluster"
+	expectedID := "test-cluster"
 	if info.ClusterID != expectedID {
 		t.Errorf("Expected cluster ID %q, got %q", expectedID, info.ClusterID)
 	}

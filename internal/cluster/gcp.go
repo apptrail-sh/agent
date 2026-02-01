@@ -87,14 +87,15 @@ func (p *GCPProvider) Resolve(ctx context.Context) (*ClusterInfo, error) {
 	zoneName := path.Base(zone)
 	region := extractRegionFromZone(zoneName)
 
-	// Build cluster ID: gcp/<project-id>/<region>/<cluster-name>
-	clusterID := fmt.Sprintf("gcp/%s/%s/%s", projectID, region, clusterName)
+	// Build cluster ID: controlplane expects the clusterName as clusterId
+	clusterID := clusterName
 
 	return &ClusterInfo{
 		ClusterID:   clusterID,
 		Provider:    ProviderGCP,
 		Region:      region,
 		ClusterName: clusterName,
+		ProjectID:   projectID,
 	}, nil
 }
 

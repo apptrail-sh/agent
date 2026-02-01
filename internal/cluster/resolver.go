@@ -21,6 +21,7 @@ type ClusterInfo struct {
 	ClusterName string
 	Provider    CloudProvider
 	Region      string
+	ProjectID   string // Cloud provider project/account ID (e.g., GCP project ID)
 }
 
 // ErrNoProviderDetected is returned when no cloud provider can be detected
