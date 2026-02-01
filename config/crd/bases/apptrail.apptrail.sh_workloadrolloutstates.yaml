@@ -75,7 +75,6 @@ spec:
                   tracked
                 type: string
             required:
-            - rolloutStarted
             - workloadKind
             - workloadName
             - workloadNamespace

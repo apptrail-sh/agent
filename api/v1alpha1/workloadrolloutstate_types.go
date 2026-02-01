@@ -35,8 +35,8 @@ type WorkloadRolloutStateSpec struct {
 	WorkloadKind string `json:"workloadKind"`
 
 	// RolloutStarted is the timestamp when the rollout started
-	// +required
-	RolloutStarted metav1.Time `json:"rolloutStarted"`
+	// +optional
+	RolloutStarted metav1.Time `json:"rolloutStarted,omitempty"`
 
 	// Version is the version being rolled out (app.kubernetes.io/version label)
 	// +optional
