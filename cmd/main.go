@@ -23,10 +23,12 @@ import (
 	"flag"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/apptrail-sh/agent/internal/buildinfo"
 	"github.com/apptrail-sh/agent/internal/cluster"
 	"github.com/apptrail-sh/agent/internal/filter"
+	"github.com/apptrail-sh/agent/internal/heartbeat"
 	"github.com/apptrail-sh/agent/internal/hooks"
 	"github.com/apptrail-sh/agent/internal/hooks/controlplane"
 	"github.com/apptrail-sh/agent/internal/hooks/pubsub"
@@ -76,6 +78,8 @@ type config struct {
 	excludeNamespaces    string
 	requireLabels        string
 	excludeLabels        string
+	heartbeatEnabled     bool
+	heartbeatInterval    time.Duration
 }
 
 func init() {
@@ -100,8 +104,11 @@ func main() {
 	resourceEventChan := make(chan model.ResourceEventPayload, 1000)
 
 	// Setup publishers
-	publishers, resourcePublishers := setupPublishers(cfg, agentVersion)
+	publishers, resourcePublishers, heartbeatPublishers := setupPublishers(cfg, agentVersion)
 	startPublisherQueues(cfg, publisherChan, resourceEventChan, publishers, resourcePublishers)
+
+	// Setup heartbeat sender
+	setupHeartbeatSender(mgr, cfg, heartbeatPublishers, agentVersion)
 
 	// Setup reconcilers
 	controllerNamespace := getControllerNamespace()
@@ -153,6 +160,10 @@ func parseFlags() config {
 		"Comma-separated list of label keys that must be present (e.g., 'app.kubernetes.io/managed-by')")
 	flag.StringVar(&cfg.excludeLabels, "exclude-labels", "",
 		"Comma-separated list of label key=value pairs that cause exclusion (e.g., 'internal.apptrail.sh/ignore=true')")
+	flag.BoolVar(&cfg.heartbeatEnabled, "heartbeat-enabled", true,
+		"Enable periodic heartbeat to control plane (default: true when tracking nodes/pods)")
+	flag.DurationVar(&cfg.heartbeatInterval, "heartbeat-interval", 5*time.Minute,
+		"Interval between heartbeats (default: 5m)")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -202,9 +213,10 @@ func setupManager(cfg config) ctrl.Manager {
 	return mgr
 }
 
-func setupPublishers(cfg config, agentVersion string) ([]hooks.EventPublisher, []hooks.ResourceEventPublisher) {
+func setupPublishers(cfg config, agentVersion string) ([]hooks.EventPublisher, []hooks.ResourceEventPublisher, []hooks.HeartbeatPublisher) {
 	var publishers []hooks.EventPublisher
 	var resourcePublishers []hooks.ResourceEventPublisher
+	var heartbeatPublishers []hooks.HeartbeatPublisher
 
 	if cfg.slackWebhookURL != "" {
 		slackPublisher := slack.NewSlackPublisher(cfg.slackWebhookURL)
@@ -220,6 +232,7 @@ func setupPublishers(cfg config, agentVersion string) ([]hooks.EventPublisher, [
 		cpPublisher := controlplane.NewHTTPPublisher(cfg.controlPlaneURL, cfg.clusterID, agentVersion)
 		publishers = append(publishers, cpPublisher)
 		resourcePublishers = append(resourcePublishers, cpPublisher)
+		heartbeatPublishers = append(heartbeatPublishers, cpPublisher)
 		setupLog.Info("Control Plane publisher enabled",
 			"endpoint", cfg.controlPlaneURL,
 			"clusterID", cfg.clusterID)
@@ -239,6 +252,7 @@ func setupPublishers(cfg config, agentVersion string) ([]hooks.EventPublisher, [
 		}
 		publishers = append(publishers, pubsubPublisher)
 		resourcePublishers = append(resourcePublishers, pubsubPublisher)
+		heartbeatPublishers = append(heartbeatPublishers, pubsubPublisher)
 		setupLog.Info("Google Pub/Sub publisher enabled",
 			"topic", cfg.pubsubTopic,
 			"clusterID", cfg.clusterID)
@@ -248,7 +262,7 @@ func setupPublishers(cfg config, agentVersion string) ([]hooks.EventPublisher, [
 		setupLog.Info("No event publishers configured, events will only be exported as metrics")
 	}
 
-	return publishers, resourcePublishers
+	return publishers, resourcePublishers, heartbeatPublishers
 }
 
 func startPublisherQueues(
@@ -386,6 +400,53 @@ func setupHealthChecks(mgr ctrl.Manager) {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+}
+
+func setupHeartbeatSender(
+	mgr ctrl.Manager,
+	cfg config,
+	heartbeatPublishers []hooks.HeartbeatPublisher,
+	agentVersion string,
+) {
+	// Only enable heartbeat if tracking infrastructure and has publishers
+	if !cfg.heartbeatEnabled {
+		setupLog.Info("Heartbeat sender disabled")
+		return
+	}
+
+	if !cfg.trackNodes && !cfg.trackPods {
+		setupLog.Info("Heartbeat sender disabled: not tracking nodes or pods")
+		return
+	}
+
+	if len(heartbeatPublishers) == 0 {
+		setupLog.Info("Heartbeat sender disabled: no heartbeat publishers configured")
+		return
+	}
+
+	heartbeatConfig := heartbeat.Config{
+		Interval:     cfg.heartbeatInterval,
+		ClusterID:    cfg.clusterID,
+		AgentVersion: agentVersion,
+		TrackNodes:   cfg.trackNodes,
+		TrackPods:    cfg.trackPods,
+	}
+
+	sender := heartbeat.NewSender(heartbeatConfig, mgr.GetClient(), heartbeatPublishers)
+
+	// Start heartbeat sender in a goroutine
+	go func() {
+		// Wait for the manager to start and cache to sync
+		<-mgr.Elected()
+		ctx := context.Background()
+		sender.Start(ctx)
+	}()
+
+	setupLog.Info("Heartbeat sender enabled",
+		"interval", cfg.heartbeatInterval,
+		"trackNodes", cfg.trackNodes,
+		"trackPods", cfg.trackPods,
+	)
 }
 
 // resolveClusterID resolves the cluster ID using the following priority:

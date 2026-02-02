@@ -220,6 +220,58 @@ func (p *PubSubPublisher) PublishBatch(ctx context.Context, events []model.Resou
 	return nil
 }
 
+// PublishHeartbeat sends a heartbeat to Google Cloud Pub/Sub
+// Implements hooks.HeartbeatPublisher interface
+func (p *PubSubPublisher) PublishHeartbeat(ctx context.Context, payload model.ClusterHeartbeatPayload) error {
+	logger := log.FromContext(ctx)
+
+	logger.Info("Publishing heartbeat to Google Pub/Sub",
+		"topic", p.topicPath,
+		"eventID", payload.EventID,
+		"nodeCount", len(payload.Inventory.NodeUIDs),
+		"podCount", len(payload.Inventory.PodUIDs),
+	)
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		logger.Error(err, "Failed to marshal heartbeat payload",
+			"eventID", payload.EventID,
+		)
+		return fmt.Errorf("failed to marshal heartbeat: %w", err)
+	}
+
+	// Use cluster ID as ordering key for heartbeats
+	orderingKey := fmt.Sprintf("%s/heartbeat", p.clusterID)
+
+	attributes := map[string]string{
+		"cluster_id":   p.clusterID,
+		"message_type": "heartbeat",
+	}
+
+	result := p.publisher.Publish(ctx, &pubsub.Message{
+		Data:        data,
+		Attributes:  attributes,
+		OrderingKey: orderingKey,
+	})
+
+	msgID, err := result.Get(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to publish heartbeat to Pub/Sub",
+			"topic", p.topicPath,
+			"eventID", payload.EventID,
+		)
+		return fmt.Errorf("failed to publish heartbeat to pubsub: %w", err)
+	}
+
+	logger.Info("Heartbeat successfully published to Google Pub/Sub",
+		"topic", p.topicPath,
+		"eventID", payload.EventID,
+		"messageID", msgID,
+	)
+
+	return nil
+}
+
 // Stop stops the publisher and closes the client
 func (p *PubSubPublisher) Stop() {
 	if p.publisher != nil {

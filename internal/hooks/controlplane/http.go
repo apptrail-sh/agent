@@ -21,31 +21,35 @@ const (
 
 // HTTPPublisher sends workload updates to the AppTrail Control Plane via HTTP
 type HTTPPublisher struct {
-	client        *resty.Client
-	endpoint      string
-	batchEndpoint string
-	clusterID     string
-	agentVersion  string
+	client            *resty.Client
+	endpoint          string
+	batchEndpoint     string
+	heartbeatEndpoint string
+	clusterID         string
+	agentVersion      string
 }
 
 // NewHTTPPublisher creates a new HTTP publisher for the control plane
-func NewHTTPPublisher(endpoint, clusterID, agentVersion string) *HTTPPublisher {
+func NewHTTPPublisher(baseURL, clusterID, agentVersion string) *HTTPPublisher {
 	client := resty.New().
 		SetTimeout(10 * time.Second).
 		SetRetryCount(3).
 		SetRetryWaitTime(1 * time.Second).
 		SetRetryMaxWaitTime(5 * time.Second)
 
-	// Derive batch endpoint from base endpoint
-	// e.g., /ingest/v1/agent/events -> /ingest/v1/agent/events/batch
-	batchEndpoint := strings.TrimSuffix(endpoint, "/") + "/batch"
+	// Construct all endpoints from base URL
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	endpoint := baseURL + "/ingest/v1/agent/events"
+	batchEndpoint := baseURL + "/ingest/v1/agent/events/batch"
+	heartbeatEndpoint := baseURL + "/ingest/v1/agent/heartbeat"
 
 	return &HTTPPublisher{
-		client:        client,
-		endpoint:      endpoint,
-		batchEndpoint: batchEndpoint,
-		clusterID:     clusterID,
-		agentVersion:  agentVersion,
+		client:            client,
+		endpoint:          endpoint,
+		batchEndpoint:     batchEndpoint,
+		heartbeatEndpoint: heartbeatEndpoint,
+		clusterID:         clusterID,
+		agentVersion:      agentVersion,
 	}
 }
 
@@ -184,6 +188,54 @@ func (p *HTTPPublisher) PublishBatch(ctx context.Context, events []model.Resourc
 	logger.Info("Batch successfully published to control plane",
 		"endpoint", p.batchEndpoint,
 		"eventCount", len(events),
+		"statusCode", resp.StatusCode(),
+	)
+
+	return nil
+}
+
+// PublishHeartbeat sends a heartbeat to the control plane
+// Implements hooks.HeartbeatPublisher interface
+func (p *HTTPPublisher) PublishHeartbeat(ctx context.Context, payload model.ClusterHeartbeatPayload) error {
+	logger := log.FromContext(ctx)
+
+	logger.Info("Publishing heartbeat to control plane",
+		"endpoint", p.heartbeatEndpoint,
+		"eventID", payload.EventID,
+		"nodeCount", len(payload.Inventory.NodeUIDs),
+		"podCount", len(payload.Inventory.PodUIDs),
+	)
+
+	var errorResponse map[string]interface{}
+	resp, err := p.client.R().
+		SetContext(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetBody(payload).
+		SetError(&errorResponse).
+		Post(p.heartbeatEndpoint)
+
+	if err != nil {
+		logger.Error(err, "Failed to send heartbeat to control plane",
+			"endpoint", p.heartbeatEndpoint,
+			"eventID", payload.EventID,
+		)
+		return fmt.Errorf("failed to send heartbeat to control plane: %w", err)
+	}
+
+	if !resp.IsSuccess() {
+		logger.Error(nil, "Control plane returned error for heartbeat",
+			"statusCode", resp.StatusCode(),
+			"status", resp.Status(),
+			"error", errorResponse,
+			"body", resp.String(),
+			"endpoint", p.heartbeatEndpoint,
+		)
+		return fmt.Errorf("control plane returned error status %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	logger.Info("Heartbeat successfully published to control plane",
+		"endpoint", p.heartbeatEndpoint,
+		"eventID", payload.EventID,
 		"statusCode", resp.StatusCode(),
 	)
 

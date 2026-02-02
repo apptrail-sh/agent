@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	apptrailv1alpha1 "github.com/apptrail-sh/agent/api/v1alpha1"
@@ -58,6 +59,7 @@ type WorkloadReconciler struct {
 	client.Client
 	Scheme              *runtime.Scheme
 	Recorder            record.EventRecorder
+	mu                  sync.RWMutex // Protects workloadVersions and workloadPhases
 	workloadVersions    map[string]AppVersion
 	workloadPhases      map[string]string // Track last sent phase
 	publisherChan       chan<- model.WorkloadUpdate
@@ -88,7 +90,12 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 	log.Info("Reconciling workload", "kind", workload.GetKind(), "name", workload.GetName())
 
 	appkey := workload.GetNamespace() + "/" + workload.GetName() + "/" + workload.GetKind()
+
+	// Read stored state under read lock
+	wr.mu.RLock()
 	stored := wr.workloadVersions[appkey]
+	lastPhase := wr.workloadPhases[appkey]
+	wr.mu.RUnlock()
 
 	versionLabel := workload.GetVersion()
 	if versionLabel == "" {
@@ -110,12 +117,17 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 			if !crdState.RolloutStarted.IsZero() {
 				stored.RolloutStarted = crdState.RolloutStarted
 				// Update in-memory map so determineWorkloadPhase can access it
+				wr.mu.Lock()
 				wr.workloadVersions[appkey] = stored
+				wr.mu.Unlock()
 				log.Info("Loaded rollout state from CRD", "rolloutStarted", crdState.RolloutStarted)
 			}
 			// Also restore phase tracking from CRD if we have it
-			if crdState.LastSentPhase != "" && wr.workloadPhases[appkey] == "" {
+			if crdState.LastSentPhase != "" && lastPhase == "" {
+				wr.mu.Lock()
 				wr.workloadPhases[appkey] = crdState.LastSentPhase
+				wr.mu.Unlock()
+				lastPhase = crdState.LastSentPhase
 				log.Info("Restored phase tracking from CRD", "lastSentPhase", crdState.LastSentPhase)
 			}
 		}
@@ -123,7 +135,6 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 
 	// Determine current workload phase
 	currentPhase := wr.determineWorkloadPhase(workload, appkey)
-	lastPhase := wr.workloadPhases[appkey]
 
 	// Send event if version changed OR phase changed
 	versionChanged := stored.CurrentVersion != versionLabel
@@ -147,12 +158,14 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 			wr.refreshWorkloadMetrics(workload, previousVersion, versionLabel)
 
 			// Update in-memory state to match CRD (so subsequent changes will be detected)
+			wr.mu.Lock()
 			if stored.CurrentVersion != versionLabel {
 				stored.CurrentVersion = versionLabel
 				stored.PreviousVersion = crdState.LastSentVersion
 				wr.workloadVersions[appkey] = stored
 			}
 			wr.workloadPhases[appkey] = currentPhase
+			wr.mu.Unlock()
 
 			if currentPhase == phaseRollingOut {
 				return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
@@ -186,18 +199,24 @@ func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Re
 				LastUpdated:     time.Now(),
 				RolloutStarted:  stored.RolloutStarted, // Preserve rollout timer
 			}
+			wr.mu.Lock()
 			wr.workloadVersions[appkey] = newAppVer
+			wr.mu.Unlock()
 			stored = newAppVer // Update local reference
 
 			wr.refreshWorkloadMetrics(workload, stored.PreviousVersion, versionLabel)
 			log.Info("Updated workload version metric", "workload", workload.GetName(), "kind", workload.GetKind())
 		} else {
 			// Version didn't change but we might have updated RolloutStarted
+			wr.mu.Lock()
 			wr.workloadVersions[appkey] = stored
+			wr.mu.Unlock()
 		}
 
 		// Update phase tracking
+		wr.mu.Lock()
 		wr.workloadPhases[appkey] = currentPhase
+		wr.mu.Unlock()
 
 		// Persist state to CRD for deduplication after restart
 		// Always persist when we send an event, not just when rollout starts
@@ -282,7 +301,9 @@ func (wr *WorkloadReconciler) determineWorkloadPhase(workload WorkloadAdapter, a
 	if isRollingOut {
 		// Additional check: Has rollout been in progress too long?
 		// This catches cases where Flux/ArgoCD resets the K8s progress deadline
+		wr.mu.RLock()
 		stored := wr.workloadVersions[appkey]
+		wr.mu.RUnlock()
 		if !stored.RolloutStarted.IsZero() {
 			elapsed := time.Since(stored.RolloutStarted)
 			// Force failed after 15 minutes (longer than K8s default to account for resets)
