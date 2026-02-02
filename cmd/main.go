@@ -213,7 +213,11 @@ func setupManager(cfg config) ctrl.Manager {
 	return mgr
 }
 
-func setupPublishers(cfg config, agentVersion string) ([]hooks.EventPublisher, []hooks.ResourceEventPublisher, []hooks.HeartbeatPublisher) {
+func setupPublishers(cfg config, agentVersion string) (
+	[]hooks.EventPublisher,
+	[]hooks.ResourceEventPublisher,
+	[]hooks.HeartbeatPublisher,
+) {
 	var publishers []hooks.EventPublisher
 	var resourcePublishers []hooks.ResourceEventPublisher
 	var heartbeatPublishers []hooks.HeartbeatPublisher
