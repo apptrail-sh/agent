@@ -4,8 +4,8 @@ project_name: agent
 
 before:
   hooks:
-    - go mod tidy
-    - make lint build
+    # Validate that generated files are up to date (prevents +dirty version suffix)
+    - sh -c "make generate manifests fmt && go mod tidy && git diff --exit-code || (echo 'ERROR: Generated files are out of date. Run make generate manifests fmt && go mod tidy, then commit the changes.' && exit 1)"
 
 builds:
   - env:
