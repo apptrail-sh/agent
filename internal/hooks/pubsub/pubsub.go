@@ -83,9 +83,9 @@ func (p *PubSubPublisher) Publish(ctx context.Context, update model.WorkloadUpda
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
-	// Ordering key ensures events for the same workload are delivered in order.
-	// Format: cluster/namespace/workload_name
-	orderingKey := fmt.Sprintf("%s/%s/%s", p.clusterID, event.Workload.Namespace, event.Workload.Name)
+	// Ordering key ensures events for the same cluster are delivered in order.
+	// Using cluster ID for all events ensures consistent ordering across all event types.
+	orderingKey := p.clusterID
 
 	logger.Info("Publishing event to Google Pub/Sub",
 		"topic", p.topicPath,
@@ -161,16 +161,9 @@ func (p *PubSubPublisher) PublishBatch(ctx context.Context, events []model.Resou
 			continue
 		}
 
-		// Ordering key ensures events for the same resource are delivered in order.
-		// Format: cluster/resource_type/namespace/name (namespace empty for cluster-scoped)
-		var orderingKey string
-		if event.Resource.Namespace != "" {
-			orderingKey = fmt.Sprintf("%s/%s/%s/%s",
-				p.clusterID, event.ResourceType, event.Resource.Namespace, event.Resource.Name)
-		} else {
-			orderingKey = fmt.Sprintf("%s/%s/%s",
-				p.clusterID, event.ResourceType, event.Resource.Name)
-		}
+		// Ordering key ensures events for the same cluster are delivered in order.
+		// Using cluster ID for all events ensures consistent ordering across all event types.
+		orderingKey := p.clusterID
 
 		attributes := map[string]string{
 			"cluster_id":    p.clusterID,
@@ -240,8 +233,9 @@ func (p *PubSubPublisher) PublishHeartbeat(ctx context.Context, payload model.Cl
 		return fmt.Errorf("failed to marshal heartbeat: %w", err)
 	}
 
-	// Use cluster ID as ordering key for heartbeats
-	orderingKey := fmt.Sprintf("%s/heartbeat", p.clusterID)
+	// Ordering key ensures events for the same cluster are delivered in order.
+	// Using cluster ID for all events ensures consistent ordering across all event types.
+	orderingKey := p.clusterID
 
 	attributes := map[string]string{
 		"cluster_id":   p.clusterID,
