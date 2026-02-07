@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apptrailv1alpha1 "github.com/apptrail-sh/agent/api/v1alpha1"
+	"github.com/apptrail-sh/agent/internal/filter"
 	"github.com/apptrail-sh/agent/internal/model"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -64,9 +65,10 @@ type WorkloadReconciler struct {
 	workloadPhases      map[string]string // Track last sent phase
 	publisherChan       chan<- model.WorkloadUpdate
 	controllerNamespace string // Namespace where controller is running
+	filter              *filter.ResourceFilter
 }
 
-func NewWorkloadReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) *WorkloadReconciler {
+func NewWorkloadReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string, resourceFilter *filter.ResourceFilter) *WorkloadReconciler {
 	// Register metrics only once
 	if !metricsRegistered {
 		metrics.Registry.MustRegister(appVersionGauge)
@@ -81,12 +83,19 @@ func NewWorkloadReconciler(client client.Client, scheme *runtime.Scheme, recorde
 		workloadPhases:      make(map[string]string),
 		publisherChan:       publisherChan,
 		controllerNamespace: controllerNamespace,
+		filter:              resourceFilter,
 	}
 }
 
 // ReconcileWorkload contains the shared reconciliation logic for all workload types
 func (wr *WorkloadReconciler) ReconcileWorkload(ctx context.Context, req ctrl.Request, workload WorkloadAdapter) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
+
+	// Skip workloads in excluded namespaces
+	if wr.filter != nil && !wr.filter.ShouldWatchNamespace(req.Namespace) {
+		return ctrl.Result{}, nil
+	}
+
 	log.Info("Reconciling workload", "kind", workload.GetKind(), "name", workload.GetName())
 
 	appkey := workload.GetNamespace() + "/" + workload.GetName() + "/" + workload.GetKind()

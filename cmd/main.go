@@ -112,7 +112,7 @@ func main() {
 
 	// Setup reconcilers
 	controllerNamespace := getControllerNamespace()
-	setupWorkloadReconcilers(mgr, publisherChan, controllerNamespace)
+	setupWorkloadReconcilers(mgr, cfg, publisherChan, controllerNamespace)
 	setupInfrastructureReconcilers(mgr, cfg, resourceEventChan, agentVersion)
 
 	// +kubebuilder:scaffold:builder
@@ -299,13 +299,22 @@ func getControllerNamespace() string {
 	return controllerNamespace
 }
 
-func setupWorkloadReconcilers(mgr ctrl.Manager, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) {
+func setupWorkloadReconcilers(mgr ctrl.Manager, cfg config, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) {
+	// Create a resource filter for workload reconcilers using the same namespace
+	// exclusion config as infrastructure reconcilers, ensuring consistent filtering
+	filterConfig := filter.ResourceFilterConfig{
+		WatchNamespaces:   splitAndTrim(cfg.watchNamespaces),
+		ExcludeNamespaces: splitAndTrim(cfg.excludeNamespaces),
+	}
+	resourceFilter := filter.NewResourceFilter(filterConfig)
+
 	deploymentReconciler := reconciler.NewDeploymentReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("apptrail-agent"),
 		publisherChan,
-		controllerNamespace)
+		controllerNamespace,
+		resourceFilter)
 
 	if err := deploymentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDeployment")
@@ -317,7 +326,8 @@ func setupWorkloadReconcilers(mgr ctrl.Manager, publisherChan chan<- model.Workl
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("apptrail-agent"),
 		publisherChan,
-		controllerNamespace)
+		controllerNamespace,
+		resourceFilter)
 
 	if err := statefulSetReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailStatefulSet")
@@ -329,7 +339,8 @@ func setupWorkloadReconcilers(mgr ctrl.Manager, publisherChan chan<- model.Workl
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("apptrail-agent"),
 		publisherChan,
-		controllerNamespace)
+		controllerNamespace,
+		resourceFilter)
 
 	if err := daemonSetReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AppTrailDaemonSet")

@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/apptrail-sh/agent/internal/filter"
 	"github.com/apptrail-sh/agent/internal/model"
 )
 
@@ -22,9 +23,9 @@ type DeploymentReconciler struct {
 	*WorkloadReconciler
 }
 
-func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string) *DeploymentReconciler {
+func NewDeploymentReconciler(client client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, publisherChan chan<- model.WorkloadUpdate, controllerNamespace string, resourceFilter *filter.ResourceFilter) *DeploymentReconciler {
 	return &DeploymentReconciler{
-		WorkloadReconciler: NewWorkloadReconciler(client, scheme, recorder, publisherChan, controllerNamespace),
+		WorkloadReconciler: NewWorkloadReconciler(client, scheme, recorder, publisherChan, controllerNamespace, resourceFilter),
 	}
 }
 
