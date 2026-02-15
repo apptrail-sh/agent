@@ -70,6 +70,7 @@ type config struct {
 	enableHTTP2          bool
 	slackWebhookURL      string
 	controlPlaneURL      string
+	controlPlaneAPIKey   string
 	clusterID            string
 	pubsubTopic          string
 	trackNodes           bool
@@ -142,6 +143,8 @@ func parseFlags() config {
 	flag.StringVar(&cfg.slackWebhookURL, "slack-webhook-url", "", "The URL to send slack notifications to")
 	flag.StringVar(&cfg.controlPlaneURL, "controlplane-url", "",
 		"The URL of the AppTrail Control Plane (e.g., http://controlplane:3000/ingest/v1/agent/events)")
+	flag.StringVar(&cfg.controlPlaneAPIKey, "api-key", os.Getenv("APPTRAIL_API_KEY"),
+		"API key for authenticating with the Control Plane")
 	flag.StringVar(&cfg.clusterID, "cluster-id", os.Getenv("CLUSTER_ID"),
 		"Unique identifier for this cluster (e.g., staging.stg01)")
 	flag.StringVar(&cfg.pubsubTopic, "pubsub-topic", os.Getenv("PUBSUB_TOPIC"),
@@ -233,7 +236,7 @@ func setupPublishers(cfg config, agentVersion string) (
 			setupLog.Error(nil, "cluster-id is required when controlplane-url is set")
 			os.Exit(1)
 		}
-		cpPublisher := controlplane.NewHTTPPublisher(cfg.controlPlaneURL, cfg.clusterID, agentVersion)
+		cpPublisher := controlplane.NewHTTPPublisher(cfg.controlPlaneURL, cfg.clusterID, agentVersion, cfg.controlPlaneAPIKey)
 		publishers = append(publishers, cpPublisher)
 		resourcePublishers = append(resourcePublishers, cpPublisher)
 		heartbeatPublishers = append(heartbeatPublishers, cpPublisher)

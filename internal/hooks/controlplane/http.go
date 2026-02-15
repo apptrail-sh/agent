@@ -30,12 +30,16 @@ type HTTPPublisher struct {
 }
 
 // NewHTTPPublisher creates a new HTTP publisher for the control plane
-func NewHTTPPublisher(baseURL, clusterID, agentVersion string) *HTTPPublisher {
+func NewHTTPPublisher(baseURL, clusterID, agentVersion, apiKey string) *HTTPPublisher {
 	client := resty.New().
 		SetTimeout(10 * time.Second).
 		SetRetryCount(3).
 		SetRetryWaitTime(1 * time.Second).
 		SetRetryMaxWaitTime(5 * time.Second)
+
+	if apiKey != "" {
+		client.SetHeader("X-API-Key", apiKey)
+	}
 
 	// Construct all endpoints from base URL
 	baseURL = strings.TrimSuffix(baseURL, "/")
