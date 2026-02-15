@@ -42,6 +42,7 @@ dockers:
       - "ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}-amd64"
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--provenance=false"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title={{.ProjectName}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
@@ -57,6 +58,7 @@ dockers:
       - "ghcr.io/apptrail-sh/agent:{{ .Major }}.{{ .Minor }}-arm64v8"
     build_flag_templates:
       - "--platform=linux/arm64/v8"
+      - "--provenance=false"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title={{.ProjectName}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
